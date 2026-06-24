@@ -13,11 +13,11 @@ const API_BASE = (() => {
 
 const SAMPLE_PROMPTS = [
   "Show all employees whose salary is greater than 50000",
-  "Find top 5 students with highest CGPA",
-  "Increase salary of all employees in IT department by 10 percent",
-  "Delete students whose attendance is less than 75",
+  "Find the top 5 highest-paid employees",
   "Show employee name with department name",
-  "Transfer 5000 from account 101 to account 102",
+  "Find the top 2 highest-paid employees within each department",
+  "Show 3 random employees",
+  "Count employees in each department",
 ];
 
 const DESTRUCTIVE_TYPES = new Set(["UPDATE", "DELETE", "TRANSACTION"]);
@@ -77,6 +77,7 @@ const executionMessage = $("execution-message");
 const executionThead = $("execution-thead");
 const executionTbody = $("execution-tbody");
 const demoModeNote = $("demo-mode-note");
+const executeSection = document.querySelector(".execute-section");
 
 const schemaDrawer = $("schema-drawer");
 const schemaContent = $("schema-content");
@@ -165,13 +166,13 @@ function getSelectedQuery() {
 
 function getQueryOptionLabel(sql, index) {
   if (/ROW_NUMBER\s*\(\s*\)\s+OVER/i.test(sql)) {
-    return "Option 1: ROW_NUMBER() ranking";
+    return "Recommended: ROW_NUMBER ranking";
   }
   if (/DENSE_RANK\s*\(\s*\)\s+OVER/i.test(sql)) {
-    return "Option 2: DENSE_RANK() ranking with ties";
+    return "Handles ties: DENSE_RANK ranking";
   }
-  if (/COUNT\s*\(\s*DISTINCT\s+e2\.Salary\s*\)/i.test(sql)) {
-    return "Option 3: Correlated subquery alternative";
+  if (/COUNT\s*\(\s*DISTINCT\s+e2\.salary\s*\)/i.test(sql)) {
+    return "Alternative: Correlated subquery";
   }
   return `Option ${index + 1}`;
 }
@@ -195,7 +196,13 @@ function restoreState() {
     promptInput.value = saved.prompt || "";
     dbTypeSelect.value = appState.databaseType;
 
-    if (appState.currentResponse && (appState.selectedQuery || appState.queryType === "UNSUPPORTED_SCHEMA")) {
+    if (appState.currentResponse && (
+      appState.selectedQuery ||
+      appState.queryType === "UNSUPPORTED_SCHEMA" ||
+      appState.queryType === "MULTIPLE_PROMPTS_DETECTED" ||
+      appState.queryType === "INVALID_PROMPT" ||
+      appState.queryType === "UNSAFE_REQUEST"
+    )) {
       displayResults(appState.currentResponse);
     }
   } catch {
@@ -227,6 +234,45 @@ function renderTagList(el, items, empty = "None detected") {
     const li = document.createElement("li");
     li.textContent = item;
     el.appendChild(li);
+  });
+}
+
+function normalizeBulletText(text) {
+  return String(text || "").replace(/^\s*[-•]\s*/, "").trim();
+}
+
+function renderExplanation(value) {
+  outputExplanation.innerHTML = "";
+
+  const items = Array.isArray(value)
+    ? value
+    : typeof value === "string" && value.includes("\n")
+      ? value.split(/\n+/)
+      : [];
+
+  const bullets = items.map(normalizeBulletText).filter(Boolean);
+
+  if (bullets.length > 1) {
+    const ul = document.createElement("ul");
+    ul.className = "detail-list";
+    bullets.forEach((text) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      ul.appendChild(li);
+    });
+    outputExplanation.appendChild(ul);
+    return;
+  }
+
+  outputExplanation.textContent = normalizeBulletText(value) || "—";
+}
+
+function activateExplanationTab() {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === "explanation");
+  });
+  document.querySelectorAll(".tab-pane").forEach((pane) => {
+    pane.classList.toggle("active", pane.id === "tab-explanation");
   });
 }
 
@@ -382,21 +428,96 @@ function renderUnsupportedSchema(data) {
   appState.selectedQuery = "";
   outputSql.textContent = "";
   queryOptionsContainer.innerHTML = "";
+  const explanationMessage = Array.isArray(data.explanation)
+    ? data.explanation[0]
+    : data.explanation;
 
   unsupportedCard.hidden = false;
+  unsupportedCard.classList.remove("multiple-prompts-card");
+  unsupportedCard.querySelector("h3").textContent = "Unsupported Schema Detected";
+  unsupportedCard.querySelector(".unsupported-card__eyebrow").textContent =
+    "No SQL query was generated to avoid incorrect output.";
   sqlBlock.hidden = true;
   queryOptionsCard.hidden = true;
   detailsTabs.hidden = true;
   btnCopySql.hidden = true;
   btnExecute.disabled = true;
+  executeSection.hidden = false;
   demoModeNote.hidden = true;
 
   unsupportedMessage.textContent =
-    data.explanation || "This prompt requires tables that are not available in the current schema.";
+    explanationMessage || "This prompt requires tables that are not available in the current schema.";
   unsupportedWarning.textContent =
     data.warning || "The system avoided generating an incorrect hallucinated query.";
   unsupportedOptimization.textContent =
     data.optimization_suggestion || "Add the required schema or use one of the available demo tables.";
+}
+
+function renderMultiplePromptsWarning(data) {
+  appState.selectedQuery = "";
+  outputSql.textContent = "";
+  queryOptionsContainer.innerHTML = "";
+
+  unsupportedCard.hidden = false;
+  unsupportedCard.classList.add("multiple-prompts-card");
+  unsupportedCard.querySelector("h3").textContent = "Multiple requests detected";
+  unsupportedCard.querySelector(".unsupported-card__eyebrow").textContent =
+    "No SQL query was generated because En2SQL supports one request at a time.";
+  unsupportedMessage.textContent =
+    "Please enter one SQL request at a time. This helps En2SQL generate a more accurate and safe query.";
+  unsupportedWarning.textContent = data.warning || "Multiple prompts detected.";
+  unsupportedOptimization.textContent =
+    "Example: enter only “Show all employees whose salary is greater than 50000”, then generate the department count query separately.";
+
+  sqlBlock.hidden = true;
+  queryOptionsCard.hidden = true;
+  detailsTabs.hidden = false;
+  btnCopySql.hidden = true;
+  btnExecute.disabled = true;
+  executeSection.hidden = true;
+  demoModeNote.hidden = true;
+
+  activateExplanationTab();
+  renderExplanation(data.explanation || []);
+  renderTagList(outputTables, data.affected_tables);
+  renderTagList(outputColumns, data.affected_columns);
+  outputImpact.textContent = data.expected_output || "No SQL query was generated because multiple prompts were entered together.";
+  outputOptimization.textContent = data.optimization_suggestion || "Split your input into separate prompts and generate them one by one.";
+  outputWarning.textContent = data.warning || "Multiple prompts detected.";
+}
+
+function renderNoSqlWarning(data, options = {}) {
+  appState.selectedQuery = "";
+  outputSql.textContent = "";
+  queryOptionsContainer.innerHTML = "";
+
+  unsupportedCard.hidden = false;
+  unsupportedCard.classList.add(options.className || "multiple-prompts-card");
+  unsupportedCard.querySelector("h3").textContent = options.title || "No SQL generated";
+  unsupportedCard.querySelector(".unsupported-card__eyebrow").textContent =
+    options.eyebrow || "No SQL query was generated.";
+  unsupportedMessage.textContent =
+    options.message || data.expected_output || "Please revise your prompt and try again.";
+  unsupportedWarning.textContent = data.warning || options.warning || "No SQL generated.";
+  unsupportedOptimization.textContent =
+    data.optimization_suggestion || options.optimization || "Try entering one clear SQL request in English.";
+
+  sqlBlock.hidden = true;
+  queryOptionsCard.hidden = true;
+  detailsTabs.hidden = false;
+  btnCopySql.hidden = true;
+  btnExecute.disabled = true;
+  executeSection.hidden = true;
+  demoModeNote.hidden = true;
+
+  activateExplanationTab();
+  renderExplanation(data.explanation || []);
+  renderTagList(outputTables, data.affected_tables);
+  renderTagList(outputColumns, data.affected_columns);
+  outputImpact.textContent = data.expected_output || "No SQL query was generated.";
+  outputOptimization.textContent =
+    data.optimization_suggestion || options.optimization || "Try entering one clear SQL request in English.";
+  outputWarning.textContent = data.warning || options.warning || "No SQL generated.";
 }
 
 function displayResults(data) {
@@ -408,13 +529,42 @@ function displayResults(data) {
 
   const queryType = appState.queryType;
 
+  if (queryType === "MULTIPLE_PROMPTS_DETECTED") {
+    renderMultiplePromptsWarning(data);
+    return;
+  }
+
+  if (queryType === "INVALID_PROMPT") {
+    renderNoSqlWarning(data, {
+      title: "Invalid prompt",
+      eyebrow: "Please enter a clear SQL request in English.",
+      message: "En2SQL needs a clear request before it can generate a safe SQL query.",
+      warning: "Invalid prompt.",
+      optimization: "Example: Show all employees whose salary is greater than 50000.",
+    });
+    return;
+  }
+
+  if (queryType === "UNSAFE_REQUEST") {
+    renderNoSqlWarning(data, {
+      title: "Unsafe request detected",
+      eyebrow: "No SQL query was generated for safety.",
+      message: "This request may modify or remove database objects, so En2SQL did not generate it automatically.",
+      warning: "Unsafe request detected.",
+      optimization: "Use a safe read-only request or a clearly supported update/delete request.",
+    });
+    return;
+  }
+
   // Unsupported schema
   if (queryType === "UNSUPPORTED_SCHEMA") {
     renderUnsupportedSchema(data);
     return;
   }
 
+  unsupportedCard.classList.remove("multiple-prompts-card");
   unsupportedCard.hidden = true;
+  executeSection.hidden = false;
   sqlBlock.hidden = false;
   detailsTabs.hidden = false;
   btnCopySql.hidden = false;
@@ -429,9 +579,10 @@ function displayResults(data) {
     queryOptionsCard.hidden = true;
     detailsTabs.hidden = true;
     btnCopySql.hidden = true;
+    executeSection.hidden = false;
     unsupportedMessage.textContent = sql || "No valid SQL could be generated for this prompt.";
     unsupportedWarning.textContent = data.warning || "No SQL query was generated to avoid incorrect output.";
-    unsupportedOptimization.textContent = data.optimization_suggestion || "Try a prompt using Employee, Department, Students, or Account.";
+    unsupportedOptimization.textContent = data.optimization_suggestion || "Try a prompt using employees, departments, jobs, or locations.";
     btnExecute.disabled = true;
     return;
   }
@@ -460,7 +611,7 @@ function displayResults(data) {
     warningBadge.hidden = true;
   }
 
-  outputExplanation.textContent = data.explanation || "—";
+  renderExplanation(data.explanation || "—");
   renderTagList(outputTables, data.affected_tables);
   renderTagList(outputColumns, data.affected_columns);
   outputImpact.textContent = data.expected_output || "—";
@@ -594,7 +745,6 @@ async function handleGenerate(event) {
   console.log("Generate clicked");
 
   const prompt = promptInput.value.trim();
-  if (!prompt) { showToast("Please describe your query in English.", "error"); return; }
   if (!backendOnline) { showToast("Backend is not reachable. Start Flask on http://localhost:5000", "error"); return; }
 
   appState.databaseType = dbTypeSelect.value;

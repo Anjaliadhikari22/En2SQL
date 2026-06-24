@@ -113,10 +113,20 @@ def _estimate_demo_impact(intent: dict[str, Any], action: str) -> str:
     if intent.get("grouped_ranking"):
         grouped_ranking = intent.get("grouped_ranking") or {}
         group_limit = grouped_ranking.get("limit") or limit or 1
+        if grouped_ranking.get("type") == "HIGHEST_WITHIN_GROUP":
+            return (
+                "- Top-paid employees may be returned for each department.\n"
+                "- The DENSE_RANK option may return extra rows if employees have the same salary.\n"
+                "- No data will be modified because this is a SELECT query."
+            )
         return (
-            f"Up to {group_limit} employees per department may be returned. "
-            "DENSE_RANK may return more rows if salary ties exist."
+            f"- Up to {group_limit} employees per department may be returned.\n"
+            "- The DENSE_RANK option may return extra rows if employees have the same salary.\n"
+            "- No data will be modified because this is a SELECT query."
         )
+
+    if intent.get("multi_query_type") == "COUNT_EMPLOYEES_BY_DEPARTMENT":
+        return "One summary row may be returned for each department."
 
     if action == "TRANSACTION" or "transfer" in normalized:
         return "Rows may be returned based on matching records."
@@ -152,10 +162,20 @@ def describe_expected_impact(
     if intent.get("grouped_ranking"):
         grouped_ranking = intent.get("grouped_ranking") or {}
         limit = grouped_ranking.get("limit") or intent.get("limit") or 1
+        if grouped_ranking.get("type") == "HIGHEST_WITHIN_GROUP":
+            return (
+                "- Top-paid employees may be returned for each department.\n"
+                "- The DENSE_RANK option may return extra rows if employees have the same salary.\n"
+                "- No data will be modified because this is a SELECT query."
+            )
         return (
-            f"Up to {limit} employees per department may be returned. "
-            "DENSE_RANK may return more rows if salary ties exist."
+            f"- Up to {limit} employees per department may be returned.\n"
+            "- The DENSE_RANK option may return extra rows if employees have the same salary.\n"
+            "- No data will be modified because this is a SELECT query."
         )
+
+    if intent.get("multi_query_type") == "COUNT_EMPLOYEES_BY_DEPARTMENT":
+        return "One summary row may be returned for each department."
 
     if not db_connected:
         return _estimate_demo_impact(intent, action)
@@ -193,6 +213,9 @@ def analyze_impact(
     if intent.get("grouped_ranking"):
         tables = ["employees", "departments"]
         columns = ["employee_id", "first_name", "last_name", "salary", "department_id", "department_name"]
+    elif intent.get("multi_query_type") == "COUNT_EMPLOYEES_BY_DEPARTMENT":
+        tables = ["departments", "employees"]
+        columns = ["department_name", "department_id", "employee_id"]
     else:
         tables = extract_tables_from_sql(sql) or intent.get("tables", [])
         columns = extract_filter_columns(sql, intent)

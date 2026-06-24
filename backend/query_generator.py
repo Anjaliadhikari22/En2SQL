@@ -260,16 +260,7 @@ def _build_hr_special_select(intent: dict[str, Any], db_type: str) -> Optional[s
         )
 
     if re.search(r"\bcount\b", normalized) and re.search(r"\bemployees?\b", normalized) and re.search(r"\beach\s+departments?\b|\bper\s+departments?\b|\bin\s+each\s+departments?\b", normalized):
-        return (
-            "SELECT\n"
-            "    d.department_name,\n"
-            "    COUNT(e.employee_id) AS employee_count\n"
-            "FROM departments d\n"
-            "LEFT JOIN employees e\n"
-            "ON d.department_id = e.department_id\n"
-            "GROUP BY d.department_name\n"
-            "ORDER BY employee_count DESC;"
-        )
+        return build_department_employee_count_queries()[0]
 
     return None
 
@@ -328,15 +319,14 @@ def _build_employee_department_window_rank_query(intent: dict[str, Any], rank_fu
         "        e.first_name,\n"
         "        e.last_name,\n"
         "        e.salary,\n"
-        "        e.department_id,\n"
         "        d.department_name,\n"
         f"        {rank_function}() OVER (\n"
         "            PARTITION BY e.department_id\n"
         "            ORDER BY e.salary DESC\n"
         "        ) AS salary_rank\n"
         "    FROM employees e\n"
-        "    INNER JOIN departments d\n"
-        "    ON e.department_id = d.department_id\n"
+        "    JOIN departments d\n"
+        "        ON e.department_id = d.department_id\n"
         ")\n"
         "SELECT\n"
         "    department_name,\n"
@@ -361,13 +351,13 @@ def _build_employee_department_correlated_rank_query(intent: dict[str, Any]) -> 
         "    e.last_name,\n"
         "    e.salary\n"
         "FROM employees e\n"
-        "INNER JOIN departments d\n"
-        "ON e.department_id = d.department_id\n"
+        "JOIN departments d\n"
+        "    ON e.department_id = d.department_id\n"
         "WHERE (\n"
         "    SELECT COUNT(DISTINCT e2.salary)\n"
         "    FROM employees e2\n"
         "    WHERE e2.department_id = e.department_id\n"
-        "    AND e2.salary > e.salary\n"
+        "      AND e2.salary > e.salary\n"
         f") < {limit}\n"
         "ORDER BY d.department_name, e.salary DESC;"
     )
@@ -375,11 +365,85 @@ def _build_employee_department_correlated_rank_query(intent: dict[str, Any]) -> 
 
 def build_grouped_ranking_queries(intent: dict[str, Any]) -> list[str]:
     """Return user-facing alternatives for top-N employees within each department."""
+    if (intent.get("grouped_ranking") or {}).get("type") == "HIGHEST_WITHIN_GROUP":
+        return build_highest_paid_per_department_queries()
+
     return [
         _build_employee_department_window_rank_query(intent, "ROW_NUMBER"),
         _build_employee_department_window_rank_query(intent, "DENSE_RANK"),
         _build_employee_department_correlated_rank_query(intent),
     ]
+
+
+def build_highest_paid_per_department_queries() -> list[str]:
+    """Return alternatives for highest-paid employees in each department."""
+    dense_rank_query = (
+        "WITH ranked_employees AS (\n"
+        "    SELECT\n"
+        "        e.employee_id,\n"
+        "        e.first_name,\n"
+        "        e.last_name,\n"
+        "        e.salary,\n"
+        "        d.department_name,\n"
+        "        DENSE_RANK() OVER (\n"
+        "            PARTITION BY e.department_id\n"
+        "            ORDER BY e.salary DESC\n"
+        "        ) AS salary_rank\n"
+        "    FROM employees e\n"
+        "    JOIN departments d\n"
+        "        ON e.department_id = d.department_id\n"
+        ")\n"
+        "SELECT\n"
+        "    department_name,\n"
+        "    employee_id,\n"
+        "    first_name,\n"
+        "    last_name,\n"
+        "    salary\n"
+        "FROM ranked_employees\n"
+        "WHERE salary_rank = 1\n"
+        "ORDER BY department_name;"
+    )
+    max_salary_query = (
+        "SELECT\n"
+        "    d.department_name,\n"
+        "    e.employee_id,\n"
+        "    e.first_name,\n"
+        "    e.last_name,\n"
+        "    e.salary\n"
+        "FROM employees e\n"
+        "JOIN departments d\n"
+        "    ON e.department_id = d.department_id\n"
+        "WHERE e.salary = (\n"
+        "    SELECT MAX(e2.salary)\n"
+        "    FROM employees e2\n"
+        "    WHERE e2.department_id = e.department_id\n"
+        ")\n"
+        "ORDER BY d.department_name;"
+    )
+    return [dense_rank_query, max_salary_query]
+
+
+def build_department_employee_count_queries() -> list[str]:
+    """Return alternatives for counting employees in each department."""
+    with_names = (
+        "SELECT\n"
+        "    d.department_name,\n"
+        "    COUNT(e.employee_id) AS employee_count\n"
+        "FROM departments d\n"
+        "LEFT JOIN employees e\n"
+        "ON d.department_id = e.department_id\n"
+        "GROUP BY d.department_name\n"
+        "ORDER BY employee_count DESC;"
+    )
+    by_id = (
+        "SELECT\n"
+        "    department_id,\n"
+        "    COUNT(employee_id) AS employee_count\n"
+        "FROM employees\n"
+        "GROUP BY department_id\n"
+        "ORDER BY employee_count DESC;"
+    )
+    return [with_names, by_id]
 
 
 def _build_inner_join_select(intent: dict[str, Any]) -> str:
@@ -509,6 +573,9 @@ def generate_all_queries(
 
     if intent.get("grouped_ranking"):
         return build_grouped_ranking_queries(intent)
+
+    if intent.get("multi_query_type") == "COUNT_EMPLOYEES_BY_DEPARTMENT":
+        return build_department_employee_count_queries()
 
     builders = {
         "SELECT": build_select_query,

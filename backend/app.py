@@ -61,6 +61,65 @@ def _run_pipeline(prompt: str, database_type: str) -> dict:
     # Step 1: Rule-based NLP
     intent = process_prompt(prompt, known_tables, schema)
 
+    if intent.get("invalid_prompt"):
+        return {
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "query_type": "INVALID_PROMPT",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "Please enter a clear request in English.",
+                "Example: Show all employees whose salary is greater than 50000.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated because the prompt was empty or unclear.",
+            "validation": "Please enter a clear request.",
+            "optimization_suggestion": "Try a complete prompt such as: Show all employees whose salary is greater than 50000.",
+            "warning": "Invalid prompt.",
+        }
+
+    if intent.get("unsafe_request"):
+        return {
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "query_type": "UNSAFE_REQUEST",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "This request may modify or remove database objects.",
+                "For safety, En2SQL did not generate this query automatically.",
+                "Please use a clear and safe request.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated because the request may be unsafe.",
+            "validation": "Unsafe request detected.",
+            "optimization_suggestion": "Use a safe read-only request or a clearly supported update/delete request.",
+            "warning": "Unsafe request detected.",
+        }
+
+    if intent.get("multiple_prompts_detected"):
+        return {
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "query_type": "MULTIPLE_PROMPTS_DETECTED",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "I found more than one request in your input.",
+                "Please enter one SQL request at a time so the generated query is accurate.",
+                "Generate the first query, then enter the next request separately.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated because multiple prompts were entered together.",
+            "validation": "Please enter one request at a time.",
+            "optimization_suggestion": "Split your input into separate prompts and generate them one by one.",
+            "warning": "Multiple prompts detected.",
+        }
+
     if intent.get("unsupported_schema"):
         return {
             "user_prompt": prompt,
@@ -68,13 +127,17 @@ def _run_pipeline(prompt: str, database_type: str) -> dict:
             "query_type": "UNSUPPORTED_SCHEMA",
             "generated_queries": [],
             "selected_query": "",
-            "explanation": "This prompt requires tables that are not available in the current schema.",
+            "explanation": [
+                "This request needs tables that are not available in the current database.",
+                "No SQL query was generated to avoid an incorrect result.",
+                "Use the available HR tables such as employees, departments, jobs, locations, countries, regions, and dependents.",
+            ],
             "affected_tables": [],
             "affected_columns": [],
             "expected_output": "No query generated because required schema is missing.",
             "validation": "Unsupported schema",
             "optimization_suggestion": "Add the required schema or use one of the available demo tables.",
-            "warning": "The system avoided generating an incorrect hallucinated query.",
+            "warning": "Unsupported schema.",
         }
 
     # Step 2: SQL generation (user-facing queries only)
@@ -180,9 +243,6 @@ def generate():
     try:
         data = request.get_json(silent=True) or {}
         prompt = (data.get("prompt") or "").strip()
-
-        if not prompt:
-            return jsonify({"error": "Field 'prompt' is required and cannot be empty."}), 400
 
         try:
             database_type = _normalize_database_type(

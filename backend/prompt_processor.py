@@ -50,6 +50,8 @@ UNSUPPORTED_DOMAIN_KEYWORDS: tuple[str, ...] = (
     "customers",
     "invoice",
     "payment",
+    "account",
+    "accounts",
     "student",
     "students",
     "cgpa",
@@ -70,9 +72,112 @@ COLUMN_ALIASES: dict[str, list[str]] = {
 }
 
 
+DIRECT_SQL_RE = re.compile(
+    r"^\s*(SELECT|WITH|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE)\b",
+    re.IGNORECASE,
+)
+
+DANGEROUS_SQL_RE = re.compile(
+    r"\b("
+    r"DROP\s+TABLE|TRUNCATE\b|ALTER\s+TABLE|CREATE\s+USER|GRANT\b|REVOKE\b|"
+    r"DELETE\s+FROM\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def normalize_prompt(prompt: str) -> str:
+    """
+    Clean common natural-language input noise before intent detection.
+
+    Direct SQL-looking input is only whitespace-normalized so SQL symbols are not damaged.
+    """
+    text = (prompt or "").strip()
+    if DIRECT_SQL_RE.match(text):
+        return re.sub(r"\s+", " ", text)
+
+    cleaned = _normalize_numeric_separators(text)
+    cleaned = re.sub(r"[@#*~`]+", " ", cleaned)
+    cleaned = re.sub(r"\b(over)\b", "greater than", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\brandomly\s+selected\b", "random", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bdepartment\s+wise\b", "within each department", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bper\s+department\b", "within each department", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def normalize_text(text: str) -> str:
-    """Lowercase and collapse whitespace."""
-    return re.sub(r"\s+", " ", text.strip().lower())
+    """Normalize prompt text for case-insensitive rule matching."""
+    return normalize_prompt(text).lower()
+
+
+def _normalize_numeric_separators(text: str) -> str:
+    """Join accidental separators inside numeric values in natural-language prompts."""
+    numeric_chunk = re.compile(r"\d(?:[\d,*]|\s+(?=\d))*")
+
+    def clean_match(match: re.Match[str]) -> str:
+        chunk = match.group(0)
+        if not re.search(r"[,\*\s]", chunk):
+            return chunk
+        return re.sub(r"[,\*\s]+", "", chunk)
+
+    return numeric_chunk.sub(clean_match, text)
+
+
+REQUEST_START_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:\d+[\).]\s*)?"
+    r"(show|find|get|list|display|select|fetch|retrieve|give|count|how many|"
+    r"what|which|increase|update|delete|add|insert|create)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_request(fragment: str) -> bool:
+    """Return True when a text fragment reads like a standalone user request."""
+    cleaned = fragment.strip()
+    if not cleaned:
+        return False
+    return bool(REQUEST_START_RE.search(cleaned))
+
+
+def detect_multiple_prompts(text: str) -> bool:
+    """Detect when the user entered multiple independent natural-language requests."""
+    raw = text.strip()
+    if not raw:
+        return False
+
+    non_empty_lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if len(non_empty_lines) >= 2 and sum(_looks_like_request(line) for line in non_empty_lines) >= 2:
+        return True
+
+    if len(re.findall(r"(?:^|\s)\d+[\).]\s+\S+", raw)) >= 2:
+        return True
+
+    semicolon_parts = [part.strip() for part in raw.split(";") if part.strip()]
+    if len(semicolon_parts) >= 2 and sum(_looks_like_request(part) for part in semicolon_parts) >= 2:
+        return True
+
+    sentence_parts = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+", raw)
+        if part.strip()
+    ]
+    if len(sentence_parts) >= 2 and sum(_looks_like_request(part) for part in sentence_parts) >= 2:
+        return True
+
+    return False
+
+
+def is_invalid_prompt(text: str) -> bool:
+    """Return True for empty or symbol-only prompts."""
+    cleaned = normalize_prompt(text)
+    return not cleaned or not re.search(r"[A-Za-z0-9]", cleaned)
+
+
+def is_unsafe_request(text: str) -> bool:
+    """Return True for dangerous SQL/object-modification requests."""
+    return bool(DANGEROUS_SQL_RE.search(text or ""))
 
 
 def needs_unsupported_schema(text: str) -> bool:
@@ -84,7 +189,10 @@ def needs_unsupported_schema(text: str) -> bool:
         "dependent", "dependents",
     )
     if any(re.search(rf"\b{term}\b", normalized) for term in supported_hr_terms):
-        return bool(re.search(r"\b(?:product|products|order|orders|invoice|payment|revenue)\b", normalized))
+        return bool(re.search(
+            r"\b(?:product|products|order|orders|customer|customers|invoice|invoices|payment|payments|revenue|account|accounts)\b",
+            normalized,
+        ))
     return any(
         re.search(rf"\b{re.escape(keyword)}\b", normalized)
         for keyword in UNSUPPORTED_DOMAIN_KEYWORDS
@@ -183,6 +291,17 @@ def extract_conditions(text: str) -> list[dict[str, str]]:
     conditions: list[dict[str, str]] = []
     normalized = normalize_text(text)
 
+    operator_pattern = re.compile(
+        r"\b(\w+)\s*(>=|<=|!=|=|>|<)\s*('?[a-z0-9_.@-]+'?|\d+(?:\.\d+)?)",
+        re.IGNORECASE,
+    )
+    for m in operator_pattern.finditer(normalized):
+        conditions.append({
+            "column": m.group(1),
+            "operator": m.group(2),
+            "value": m.group(3).strip("'"),
+        })
+
     whose_pattern = re.compile(
         r"whose\s+(\w+)\s+is\s+"
         r"(?:(?:greater than|more than|above)\s+(\d+(?:\.\d+)?)|"
@@ -274,9 +393,10 @@ def detect_grouped_ranking(text: str) -> Optional[dict[str, Any]]:
 
     limit_match = re.search(r"(?:top|first)\s+(\d+)", normalized)
     limit = int(limit_match.group(1)) if limit_match else 1
+    ranking_type = "TOP_N_WITHIN_GROUP" if has_top_n else "HIGHEST_WITHIN_GROUP"
 
     return {
-        "type": "TOP_N_WITHIN_GROUP",
+        "type": ranking_type,
         "entity": "employees",
         "group_table": "departments",
         "partition_by": "department_id",
@@ -284,6 +404,19 @@ def detect_grouped_ranking(text: str) -> Optional[dict[str, Any]]:
         "rank_column": "salary_rank",
         "limit": limit,
     }
+
+
+def detect_department_employee_count(text: str) -> bool:
+    """Detect prompts asking for employee counts grouped by department."""
+    normalized = normalize_text(text)
+    return bool(
+        re.search(r"\bcount\b", normalized)
+        and re.search(r"\bemployees?\b", normalized)
+        and re.search(
+            r"\beach\s+departments?\b|\bper\s+departments?\b|\bin\s+each\s+departments?\b",
+            normalized,
+        )
+    )
 
 
 def detect_name_contains(text: str) -> Optional[dict[str, Any]]:
@@ -408,9 +541,64 @@ def process_prompt(
     schema: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Convert natural language into a structured intent object."""
+    cleaned_text = normalize_prompt(text)
     normalized = normalize_text(text)
 
-    if needs_unsupported_schema(text):
+    if is_invalid_prompt(text):
+        return {
+            "original_text": text,
+            "normalized_text": normalized,
+            "action": "INVALID_PROMPT",
+            "query_type": "INVALID_PROMPT",
+            "tables": [],
+            "columns": [],
+            "aggregates": [],
+            "conditions": [],
+            "set_values": [],
+            "transfer": {},
+            "order_by": None,
+            "limit": None,
+            "join_type": None,
+            "invalid_prompt": True,
+        }
+
+    if is_unsafe_request(text):
+        return {
+            "original_text": text,
+            "normalized_text": normalized,
+            "action": "UNSAFE_REQUEST",
+            "query_type": "UNSAFE_REQUEST",
+            "tables": [],
+            "columns": [],
+            "aggregates": [],
+            "conditions": [],
+            "set_values": [],
+            "transfer": {},
+            "order_by": None,
+            "limit": None,
+            "join_type": None,
+            "unsafe_request": True,
+        }
+
+    if detect_multiple_prompts(text):
+        return {
+            "original_text": text,
+            "normalized_text": normalized,
+            "action": "MULTIPLE_PROMPTS_DETECTED",
+            "query_type": "MULTIPLE_PROMPTS_DETECTED",
+            "tables": [],
+            "columns": [],
+            "aggregates": [],
+            "conditions": [],
+            "set_values": [],
+            "transfer": {},
+            "order_by": None,
+            "limit": None,
+            "join_type": None,
+            "multiple_prompts_detected": True,
+        }
+
+    if needs_unsupported_schema(cleaned_text):
         return {
             "original_text": text,
             "normalized_text": normalized,
@@ -433,10 +621,10 @@ def process_prompt(
         for info in schema.get("tables", {}).values():
             all_columns.extend(info.get("columns", []))
 
-    tables = detect_tables(text, known_tables)
-    columns = detect_columns(text, all_columns)
-    conditions = extract_conditions(text)
-    action = detect_action(text)
+    tables = detect_tables(cleaned_text, known_tables)
+    columns = detect_columns(cleaned_text, all_columns)
+    conditions = extract_conditions(cleaned_text)
+    action = detect_action(cleaned_text)
 
     intent: dict[str, Any] = {
         "original_text": text,
@@ -447,16 +635,17 @@ def process_prompt(
         "columns": columns,
         "aggregates": detect_aggregates(text),
         "conditions": conditions,
-        "set_values": extract_set_values(text) if action == "UPDATE" else [],
-        "transfer": extract_transfer_details(text) if action == "TRANSACTION" else {},
+        "set_values": extract_set_values(cleaned_text) if action == "UPDATE" else [],
+        "transfer": extract_transfer_details(cleaned_text) if action == "TRANSACTION" else {},
         "order_by": None,
         "limit": None,
         "join_type": None,
         "grouped_ranking": None,
         "dialect_feature": None,
+        "multi_query_type": None,
     }
 
-    grouped_ranking = detect_grouped_ranking(text)
+    grouped_ranking = detect_grouped_ranking(cleaned_text)
     if grouped_ranking:
         intent["grouped_ranking"] = grouped_ranking
         intent["tables"] = ["employees", "departments"]
@@ -467,7 +656,14 @@ def process_prompt(
         intent["limit"] = grouped_ranking["limit"]
         return intent
 
-    name_contains = detect_name_contains(text)
+    if detect_department_employee_count(cleaned_text):
+        intent["multi_query_type"] = "COUNT_EMPLOYEES_BY_DEPARTMENT"
+        intent["tables"] = ["departments", "employees"]
+        intent["columns"] = ["department_name", "department_id", "employee_id"]
+        intent["aggregates"] = ["COUNT"]
+        return intent
+
+    name_contains = detect_name_contains(cleaned_text)
     if name_contains:
         intent["dialect_feature"] = name_contains
         intent["tables"] = ["employees"]
@@ -479,13 +675,13 @@ def process_prompt(
         }]
         return intent
 
-    if detect_employees_hired_today(text):
+    if detect_employees_hired_today(cleaned_text):
         intent["dialect_feature"] = {"type": "EMPLOYEES_HIRED_TODAY"}
         intent["tables"] = ["employees"]
         intent["columns"] = ["hire_date"]
         return intent
 
-    random_rows = detect_random_rows(text)
+    random_rows = detect_random_rows(cleaned_text)
     if random_rows:
         intent["dialect_feature"] = random_rows
         intent["tables"] = ["employees"]

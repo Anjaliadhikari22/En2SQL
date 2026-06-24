@@ -32,9 +32,10 @@
   <!-- Hero -->
   <section class="hero">
     <div class="hero__inner">
-      <h1 class="hero__heading">Convert English into SQL instantly</h1>
+      <p class="hero__eyebrow">Natural Language SQL Assistant</p>
+      <h1 class="hero__heading">Text-to-SQL Query Generator</h1>
       <p class="hero__desc">
-        Generate, validate, explain, and analyze SQL queries for MySQL and PostgreSQL using natural language.
+        Generate, explain, validate, and analyze SQL queries from simple English prompts.
       </p>
       <div class="hero__badges">
         <span class="feature-badge">MySQL + PostgreSQL</span>
@@ -77,6 +78,13 @@
 
       <!-- Right panel: output -->
       <section class="panel panel--output">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Review output</p>
+            <h2 class="panel__title">Generated SQL</h2>
+          </div>
+        </div>
+
         <!-- Empty state -->
         <div id="output-empty" class="output-empty">
           <div class="output-empty__icon">⌘</div>
@@ -99,12 +107,15 @@
               The requested tables or columns are not available in the current database schema.
             </p>
             <div class="unsupported-card__section">
-              <span class="unsupported-card__label">Available demo schema</span>
+              <span class="unsupported-card__label">Available HR schema</span>
               <div class="unsupported-schema-list">
-                <span>Employee</span>
-                <span>Department</span>
-                <span>Students</span>
-                <span>Account</span>
+                <span>employees</span>
+                <span>departments</span>
+                <span>jobs</span>
+                <span>locations</span>
+                <span>countries</span>
+                <span>regions</span>
+                <span>dependents</span>
               </div>
             </div>
             <div class="unsupported-card__section">
@@ -150,7 +161,7 @@
             </div>
             <div class="tabs__content">
               <div id="tab-explanation" class="tab-pane active">
-                <p id="output-explanation" class="detail-text"></p>
+                <div id="output-explanation" class="detail-text"></div>
               </div>
               <div id="tab-tables" class="tab-pane">
                 <ul id="output-tables" class="tag-list"></ul>
