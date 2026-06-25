@@ -3,257 +3,121 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>En2SQL — Natural Language SQL Intelligence Platform</title>
+  <title>En2SQL — Text-to-SQL Query Generator</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
-  <!-- Backend unreachable banner -->
-  <div id="backend-error" class="backend-error" hidden>
-    Backend is not reachable. Please start Flask server on
-    <a href="http://localhost:5000" target="_blank" rel="noopener">http://localhost:5000</a>.
-  </div>
-
-  <!-- Top navigation -->
-  <nav class="navbar">
-    <div class="navbar__brand">
+<body class="landing-page">
+  <nav class="navbar landing-navbar">
+    <a class="navbar__brand landing-brand" href="#home" aria-label="En2SQL home">
       <div class="navbar__logo">E2S</div>
       <div>
         <div class="navbar__title">En2SQL</div>
-        <div class="navbar__tagline">Natural Language SQL Intelligence Platform</div>
+        <div class="navbar__tagline">Text-to-SQL Query Generator</div>
       </div>
-    </div>
+    </a>
     <div class="navbar__actions">
-      <span id="status-badge" class="status-badge status-badge--checking">Checking…</span>
-      <button id="btn-load-schema" class="btn btn-nav" type="button">Load Schema</button>
-      <button id="btn-load-history" class="btn btn-nav" type="button">Load History</button>
+      <a class="nav-link" href="#home">Home</a>
+      <a class="nav-link" href="#about">About</a>
+      <a class="btn btn-nav" href="app.html">Get Started</a>
     </div>
   </nav>
 
-  <!-- Hero -->
-  <section class="hero">
-    <div class="hero__inner">
-      <p class="hero__eyebrow">Natural Language SQL Assistant</p>
-      <h1 class="hero__heading">Text-to-SQL Query Generator</h1>
-      <p class="hero__desc">
-        Generate, explain, validate, and analyze SQL queries from simple English prompts.
-      </p>
-      <div class="hero__badges">
-        <span class="feature-badge">MySQL + PostgreSQL</span>
-        <span class="feature-badge">Impact Analysis</span>
-        <span class="feature-badge">Safe Query Validation</span>
+  <main id="home">
+    <section class="landing-hero">
+      <div class="landing-hero__inner">
+        <div class="landing-hero__content">
+          <div class="landing-logo-mark">E2S</div>
+          <p class="hero__eyebrow">Natural Language SQL Assistant</p>
+          <h1 class="landing-title">En2SQL</h1>
+          <p class="landing-tagline">Text-to-SQL Query Generator</p>
+          <p class="landing-description">
+            En2SQL converts simple English prompts into SQL queries with explanations,
+            validation, impact analysis, and support for MySQL and PostgreSQL.
+          </p>
+          <div class="hero__actions">
+            <a class="btn btn-primary btn-hero" href="app.html">Get Started</a>
+            <a class="btn btn-secondary btn-hero" href="#features">View Features</a>
+          </div>
+        </div>
+
+        <aside class="hero-preview landing-preview" aria-label="Static SQL generator preview">
+          <div class="hero-preview__topbar">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div class="hero-preview__section">
+            <p class="hero-preview__label">English Prompt</p>
+            <p class="hero-preview__prompt">Show top 5 highest-paid employees</p>
+          </div>
+          <div class="hero-preview__section">
+            <p class="hero-preview__label">Generated SQL</p>
+            <pre class="hero-preview__sql">SELECT *
+FROM employees
+ORDER BY salary DESC
+LIMIT 5;</pre>
+          </div>
+          <div class="hero-preview__badges">
+            <span>MySQL</span>
+            <span>Validated</span>
+            <span>Read-only</span>
+          </div>
+        </aside>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- Main workspace -->
-  <main class="workspace">
-    <div class="workspace__grid">
-      <!-- Left panel: input -->
-      <section class="panel panel--input">
-        <h2 class="panel__title">Describe your query in English</h2>
-        <textarea
-          id="prompt"
-          class="prompt-input"
-          rows="5"
-          placeholder="Example: Show all employees whose salary is greater than 50000"
-        ></textarea>
+    <section id="features" class="features-section landing-section" aria-labelledby="features-title">
+      <div class="section-heading section-heading--center">
+        <p class="section-kicker">Features</p>
+        <h2 id="features-title">Everything you need to turn English into reliable SQL.</h2>
+      </div>
+      <div class="features-grid">
+        <article class="feature-card">
+          <div class="feature-card__icon">Aa</div>
+          <h3>Natural Language Input</h3>
+          <p>Write database requests in simple English.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-card__icon">SQL</div>
+          <h3>SQL Generation</h3>
+          <p>Generate clean SQL queries for MySQL and PostgreSQL.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-card__icon">•</div>
+          <h3>Query Explanation</h3>
+          <p>Understand SQL using simple bullet-point explanations.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-card__icon">✓</div>
+          <h3>Safe Validation</h3>
+          <p>Detect unsupported, unsafe, or unclear requests before execution.</p>
+        </article>
+      </div>
+    </section>
 
-        <label class="field-label" for="db-type">Target database</label>
-        <select id="db-type" class="field-select">
-          <option value="mysql">MySQL</option>
-          <option value="postgresql">PostgreSQL</option>
-        </select>
-
-        <div class="action-row">
-          <button id="btn-generate" class="btn btn-primary" type="button">
-            <span class="btn__label">Generate SQL</span>
-            <span class="btn__spinner" hidden></span>
-          </button>
-          <button id="btn-clear" class="btn btn-secondary" type="button">Clear</button>
-        </div>
-
-        <p class="chips-label">Quick examples</p>
-        <div id="sample-buttons" class="sample-chips"></div>
-      </section>
-
-      <!-- Right panel: output -->
-      <section class="panel panel--output">
-        <div class="panel__header">
-          <div>
-            <p class="panel__eyebrow">Review output</p>
-            <h2 class="panel__title">Generated SQL</h2>
-          </div>
-        </div>
-
-        <!-- Empty state -->
-        <div id="output-empty" class="output-empty">
-          <div class="output-empty__icon">⌘</div>
-          <p class="output-empty__text">Your generated SQL will appear here.</p>
-          <p class="output-empty__hint">Enter a prompt and click Generate SQL to begin.</p>
-        </div>
-
-        <!-- Results -->
-        <div id="output-results" class="output-results" hidden>
-          <!-- Unsupported schema -->
-          <div id="unsupported-card" class="unsupported-card" hidden aria-live="polite">
-            <div class="unsupported-card__header">
-              <div class="unsupported-card__icon" aria-hidden="true">⚠</div>
-              <div>
-                <h3>Unsupported Schema Detected</h3>
-                <p class="unsupported-card__eyebrow">No SQL query was generated to avoid incorrect output.</p>
-              </div>
-            </div>
-            <p id="unsupported-message" class="unsupported-card__message">
-              The requested tables or columns are not available in the current database schema.
-            </p>
-            <div class="unsupported-card__section">
-              <span class="unsupported-card__label">Available HR schema</span>
-              <div class="unsupported-schema-list">
-                <span>employees</span>
-                <span>departments</span>
-                <span>jobs</span>
-                <span>locations</span>
-                <span>countries</span>
-                <span>regions</span>
-                <span>dependents</span>
-              </div>
-            </div>
-            <div class="unsupported-card__section">
-              <span class="unsupported-card__label">Warning</span>
-              <p id="unsupported-warning" class="unsupported-card__detail"></p>
-            </div>
-            <div class="unsupported-card__section">
-              <span class="unsupported-card__label">Suggestion</span>
-              <p id="unsupported-optimization" class="unsupported-card__detail"></p>
-            </div>
-          </div>
-
-          <!-- Query options (multiple) -->
-          <div id="query-options-card" class="query-options-section" hidden>
-            <h3 class="section-label">Select query variant</h3>
-            <div id="query-options" class="query-options"></div>
-          </div>
-
-          <!-- SQL editor block -->
-          <div id="sql-block" class="sql-block">
-            <div class="sql-block__header">
-              <span class="section-label">Generated SQL</span>
-              <button id="btn-copy-sql" class="btn btn-copy" type="button">Copy SQL</button>
-            </div>
-            <pre id="output-sql" class="sql-editor"></pre>
-            <div class="badge-row">
-              <span id="query-type-badge" class="pill pill--type"></span>
-              <span id="database-badge" class="pill pill--db"></span>
-              <span id="validation-badge" class="pill pill--valid"></span>
-              <span id="warning-badge" class="pill pill--warn" hidden></span>
-            </div>
-          </div>
-
-          <!-- Result details tabs -->
-          <div id="details-tabs" class="details-tabs">
-            <div class="tabs__nav" role="tablist">
-              <button class="tab-btn active" data-tab="explanation" type="button">Explanation</button>
-              <button class="tab-btn" data-tab="tables" type="button">Affected Tables</button>
-              <button class="tab-btn" data-tab="columns" type="button">Affected Columns</button>
-              <button class="tab-btn" data-tab="impact" type="button">Expected Impact</button>
-              <button class="tab-btn" data-tab="optimization" type="button">Optimization</button>
-              <button class="tab-btn" data-tab="warning" type="button">Warning</button>
-            </div>
-            <div class="tabs__content">
-              <div id="tab-explanation" class="tab-pane active">
-                <div id="output-explanation" class="detail-text"></div>
-              </div>
-              <div id="tab-tables" class="tab-pane">
-                <ul id="output-tables" class="tag-list"></ul>
-              </div>
-              <div id="tab-columns" class="tab-pane">
-                <ul id="output-columns" class="tag-list"></ul>
-              </div>
-              <div id="tab-impact" class="tab-pane">
-                <p id="output-impact" class="detail-text"></p>
-              </div>
-              <div id="tab-optimization" class="tab-pane">
-                <p id="output-optimization" class="detail-text"></p>
-              </div>
-              <div id="tab-warning" class="tab-pane">
-                <p id="output-warning" class="detail-text detail-text--warn"></p>
-              </div>
-            </div>
-          </div>
-
-          <!-- Execute -->
-          <div class="execute-section">
-            <button id="btn-execute" class="btn btn-execute" type="button" disabled>
-              Execute Selected Query
-            </button>
-            <p id="demo-mode-note" class="demo-note" hidden>
-              Execution is running in demo mode.
-            </p>
-          </div>
-
-          <!-- Execution results -->
-          <div id="execution-block" class="execution-block" hidden>
-            <h3 class="section-label">Execution Result</h3>
-            <p id="execution-message" class="execution-message"></p>
-            <div class="table-wrapper">
-              <table id="execution-table" class="data-table">
-                <thead id="execution-thead"></thead>
-                <tbody id="execution-tbody"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
+    <section id="about" class="about-section landing-section" aria-labelledby="about-title">
+      <div class="about-card">
+        <p class="section-kicker">About</p>
+        <h2 id="about-title">Why En2SQL?</h2>
+        <p>
+          En2SQL is designed to make SQL easier for learners, developers, and non-technical users by
+          converting natural language into structured SQL queries. It also explains the query,
+          identifies affected tables and columns, and predicts the expected impact.
+        </p>
+      </div>
+    </section>
   </main>
 
-  <footer class="footer">
-    <p>En2SQL &copy; 2026 &mdash; Natural Language SQL Intelligence Platform</p>
-  </footer>
-
-  <!-- Schema drawer -->
-  <div id="schema-drawer" class="drawer" hidden>
-    <div class="drawer__backdrop" data-close="schema"></div>
-    <aside class="drawer__panel">
-      <header class="drawer__header">
-        <h2>Database Schema</h2>
-        <span id="schema-mode" class="pill pill--muted"></span>
-        <button class="drawer__close" data-close="schema" type="button" aria-label="Close">&times;</button>
-      </header>
-      <div id="schema-content" class="drawer__body schema-grid"></div>
-    </aside>
-  </div>
-
-  <!-- History drawer -->
-  <div id="history-drawer" class="drawer" hidden>
-    <div class="drawer__backdrop" data-close="history"></div>
-    <aside class="drawer__panel">
-      <header class="drawer__header">
-        <h2>Query History</h2>
-        <button class="drawer__close" data-close="history" type="button" aria-label="Close">&times;</button>
-      </header>
-      <ul id="history-list" class="drawer__body history-list">
-        <li class="history-placeholder">No history loaded yet.</li>
-      </ul>
-    </aside>
-  </div>
-
-  <!-- Confirm modal -->
-  <div id="confirm-modal" class="modal" hidden>
-    <div class="modal__backdrop" data-close="modal"></div>
-    <div class="modal__dialog">
-      <h3>Confirm query execution</h3>
-      <p id="confirm-message" class="modal__text"></p>
-      <div class="modal__actions">
-        <button id="confirm-cancel" class="btn btn-secondary" type="button">Cancel</button>
-        <button id="confirm-ok" class="btn btn-danger" type="button">Execute anyway</button>
-      </div>
+  <footer class="landing-footer">
+    <div>
+      <p class="landing-footer__title">En2SQL — Text-to-SQL Query Generator</p>
+      <p class="landing-footer__text">Built for natural language SQL generation, explanation, and validation.</p>
     </div>
-  </div>
-
-  <!-- Toast -->
-  <div id="toast" class="toast" hidden></div>
-
-  <script src="script.js"></script>
+    <nav class="landing-footer__links" aria-label="Footer navigation">
+      <a href="#home">Home</a>
+      <a href="#features">Features</a>
+      <a href="app.html">Get Started</a>
+    </nav>
+  </footer>
 </body>
 </html>

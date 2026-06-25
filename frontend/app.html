@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>En2SQL App — Text-to-SQL Query Generator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="app-page">
+  <!-- Backend unreachable banner -->
+  <div id="backend-error" class="backend-error" hidden>
+    Backend is not reachable. Please start Flask server on
+    <a href="http://localhost:5000" target="_blank" rel="noopener">http://localhost:5000</a>.
+  </div>
+
+  <!-- App navigation -->
+  <nav class="navbar">
+    <div class="navbar__brand">
+      <div class="navbar__logo">E2S</div>
+      <div>
+        <div class="navbar__title">En2SQL</div>
+        <div class="navbar__tagline">Text-to-SQL Query Generator</div>
+      </div>
+    </div>
+    <div class="navbar__actions">
+      <span id="status-badge" class="status-badge status-badge--checking">Checking…</span>
+      <a class="nav-link" href="index.html">Home</a>
+      <button id="btn-load-schema" class="btn btn-nav" type="button">Load Schema</button>
+      <button id="btn-load-history" class="btn btn-nav" type="button">Load History</button>
+    </div>
+  </nav>
+
+  <!-- Main workspace -->
+  <main id="workspace" class="workspace app-workspace">
+    <div class="section-heading section-heading--workspace">
+      <p class="section-kicker">Query workspace</p>
+      <h1>Generate and review SQL in one focused place.</h1>
+      <p>Describe your request, choose a database dialect, and review the SQL with explanations before execution.</p>
+    </div>
+
+    <div class="workspace__grid">
+      <!-- Left panel: input -->
+      <section class="panel panel--input">
+        <div class="panel__header panel__header--stacked">
+          <p class="panel__eyebrow">Input</p>
+          <h2 class="panel__title">Describe your query</h2>
+        </div>
+        <textarea
+          id="prompt"
+          class="prompt-input"
+          rows="5"
+          placeholder="Example: Show all employees whose salary is greater than 50000"
+        ></textarea>
+
+        <label class="field-label" for="db-type">Target database</label>
+        <select id="db-type" class="field-select">
+          <option value="mysql">MySQL</option>
+          <option value="postgresql">PostgreSQL</option>
+        </select>
+
+        <div class="action-row">
+          <button id="btn-generate" class="btn btn-primary" type="button">
+            <span class="btn__label">Generate SQL</span>
+            <span class="btn__spinner" hidden></span>
+          </button>
+          <button id="btn-clear" class="btn btn-secondary" type="button">Clear</button>
+        </div>
+
+        <p class="chips-label">Quick prompt chips</p>
+        <div id="sample-buttons" class="sample-chips"></div>
+      </section>
+
+      <!-- Right panel: output -->
+      <section class="panel panel--output">
+        <div class="panel__header">
+          <div>
+            <p class="panel__eyebrow">Output</p>
+            <h2 class="panel__title">Generated SQL</h2>
+          </div>
+        </div>
+
+        <!-- Empty state -->
+        <div id="output-empty" class="output-empty">
+          <div class="output-empty__icon">SQL</div>
+          <p class="output-empty__text">Your generated SQL will appear here.</p>
+          <p class="output-empty__hint">Enter a prompt and click Generate SQL to begin.</p>
+        </div>
+
+        <!-- Results -->
+        <div id="output-results" class="output-results" hidden>
+          <!-- Unsupported schema / warning card -->
+          <div id="unsupported-card" class="unsupported-card" hidden aria-live="polite">
+            <div class="unsupported-card__header">
+              <div class="unsupported-card__icon" aria-hidden="true">⚠</div>
+              <div>
+                <h3>Unsupported schema</h3>
+                <p class="unsupported-card__eyebrow">No SQL query was generated to avoid incorrect output.</p>
+              </div>
+            </div>
+            <p id="unsupported-message" class="unsupported-card__message">
+              The requested tables or columns are not available in the current database schema.
+            </p>
+            <div class="unsupported-card__section">
+              <span class="unsupported-card__label">Available HR schema</span>
+              <div class="unsupported-schema-list">
+                <span>employees</span>
+                <span>departments</span>
+                <span>jobs</span>
+                <span>locations</span>
+                <span>countries</span>
+                <span>regions</span>
+                <span>dependents</span>
+              </div>
+            </div>
+            <div class="unsupported-card__section">
+              <span class="unsupported-card__label">Warning</span>
+              <p id="unsupported-warning" class="unsupported-card__detail"></p>
+            </div>
+            <div class="unsupported-card__section">
+              <span class="unsupported-card__label">Suggestion</span>
+              <p id="unsupported-optimization" class="unsupported-card__detail"></p>
+            </div>
+          </div>
+
+          <!-- Query options (multiple) -->
+          <div id="query-options-card" class="query-options-section" hidden>
+            <h3 class="section-label">Select query variant</h3>
+            <div id="query-options" class="query-options"></div>
+          </div>
+
+          <!-- SQL editor block -->
+          <div id="sql-block" class="sql-block">
+            <div class="sql-block__header">
+              <span class="section-label">Generated SQL</span>
+              <button id="btn-copy-sql" class="btn btn-copy" type="button">Copy SQL</button>
+            </div>
+            <pre id="output-sql" class="sql-editor"></pre>
+            <div class="badge-row">
+              <span id="query-type-badge" class="pill pill--type"></span>
+              <span id="database-badge" class="pill pill--db"></span>
+              <span id="validation-badge" class="pill pill--valid"></span>
+              <span id="warning-badge" class="pill pill--warn" hidden></span>
+            </div>
+          </div>
+
+          <!-- Result details tabs -->
+          <div id="details-tabs" class="details-tabs">
+            <div class="tabs__nav" role="tablist">
+              <button class="tab-btn active" data-tab="explanation" type="button">Explanation</button>
+              <button class="tab-btn" data-tab="tables" type="button">Tables</button>
+              <button class="tab-btn" data-tab="columns" type="button">Columns</button>
+              <button class="tab-btn" data-tab="impact" type="button">Impact</button>
+              <button class="tab-btn" data-tab="optimization" type="button">Optimization</button>
+              <button class="tab-btn" data-tab="warning" type="button">Warning</button>
+            </div>
+            <div class="tabs__content">
+              <div id="tab-explanation" class="tab-pane active">
+                <div id="output-explanation" class="detail-text"></div>
+              </div>
+              <div id="tab-tables" class="tab-pane">
+                <ul id="output-tables" class="tag-list"></ul>
+              </div>
+              <div id="tab-columns" class="tab-pane">
+                <ul id="output-columns" class="tag-list"></ul>
+              </div>
+              <div id="tab-impact" class="tab-pane">
+                <p id="output-impact" class="detail-text"></p>
+              </div>
+              <div id="tab-optimization" class="tab-pane">
+                <p id="output-optimization" class="detail-text"></p>
+              </div>
+              <div id="tab-warning" class="tab-pane">
+                <p id="output-warning" class="detail-text detail-text--warn"></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Execute -->
+          <div class="execute-section">
+            <button id="btn-execute" class="btn btn-execute" type="button" disabled>
+              Execute Selected Query
+            </button>
+            <p id="demo-mode-note" class="demo-note" hidden>
+              Execution is running in demo mode.
+            </p>
+          </div>
+
+          <!-- Execution results -->
+          <div id="execution-block" class="execution-block" hidden>
+            <h3 class="section-label">Execution Result</h3>
+            <p id="execution-message" class="execution-message"></p>
+            <div class="table-wrapper">
+              <table id="execution-table" class="data-table">
+                <thead id="execution-thead"></thead>
+                <tbody id="execution-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <p>En2SQL &copy; 2026 &mdash; Text-to-SQL Query Generator</p>
+  </footer>
+
+  <!-- Schema drawer -->
+  <div id="schema-drawer" class="drawer" hidden>
+    <div class="drawer__backdrop" data-close="schema"></div>
+    <aside class="drawer__panel">
+      <header class="drawer__header">
+        <h2>Database Schema</h2>
+        <span id="schema-mode" class="pill pill--muted"></span>
+        <button class="drawer__close" data-close="schema" type="button" aria-label="Close">&times;</button>
+      </header>
+      <div id="schema-content" class="drawer__body schema-grid"></div>
+    </aside>
+  </div>
+
+  <!-- History drawer -->
+  <div id="history-drawer" class="drawer" hidden>
+    <div class="drawer__backdrop" data-close="history"></div>
+    <aside class="drawer__panel">
+      <header class="drawer__header">
+        <h2>Query History</h2>
+        <button class="drawer__close" data-close="history" type="button" aria-label="Close">&times;</button>
+      </header>
+      <ul id="history-list" class="drawer__body history-list">
+        <li class="history-placeholder">No history loaded yet.</li>
+      </ul>
+    </aside>
+  </div>
+
+  <!-- Confirm modal -->
+  <div id="confirm-modal" class="modal" hidden>
+    <div class="modal__backdrop" data-close="modal"></div>
+    <div class="modal__dialog">
+      <h3>Confirm query execution</h3>
+      <p id="confirm-message" class="modal__text"></p>
+      <div class="modal__actions">
+        <button id="confirm-cancel" class="btn btn-secondary" type="button">Cancel</button>
+        <button id="confirm-ok" class="btn btn-danger" type="button">Execute anyway</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="script.js"></script>
+</body>
+</html>

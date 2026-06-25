@@ -45,6 +45,7 @@ const btnClear = $("btn-clear");
 const btnCopySql = $("btn-copy-sql");
 const btnLoadHistory = $("btn-load-history");
 const btnLoadSchema = $("btn-load-schema");
+const btnViewSchema = $("btn-view-schema");
 
 const backendError = $("backend-error");
 const statusBadge = $("status-badge");
@@ -434,7 +435,7 @@ function renderUnsupportedSchema(data) {
 
   unsupportedCard.hidden = false;
   unsupportedCard.classList.remove("multiple-prompts-card");
-  unsupportedCard.querySelector("h3").textContent = "Unsupported Schema Detected";
+  unsupportedCard.querySelector("h3").textContent = "Unsupported schema";
   unsupportedCard.querySelector(".unsupported-card__eyebrow").textContent =
     "No SQL query was generated to avoid incorrect output.";
   sqlBlock.hidden = true;
@@ -890,6 +891,7 @@ btnClear.addEventListener("click", clearAll);
 btnCopySql.addEventListener("click", handleCopySql);
 btnLoadHistory.addEventListener("click", loadHistory);
 btnLoadSchema.addEventListener("click", loadSchema);
+btnViewSchema?.addEventListener("click", loadSchema);
 
 promptInput.addEventListener("input", persistState);
 dbTypeSelect.addEventListener("change", () => {
