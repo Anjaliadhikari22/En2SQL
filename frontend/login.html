@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in — En2SQL</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <a class="brand auth-brand" href="index.html" aria-label="Back to En2SQL home">
+      <svg class="brand-mark wordmark-symbol" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M11 7.5C7.5 9.5 5.5 12.4 5.5 16s2 6.5 5.5 8.5" />
+        <path d="M21 7.5c3.5 2 5.5 4.9 5.5 8.5s-2 6.5-5.5 8.5" />
+        <path d="M12 14.2c0-1.2 1.8-2.2 4-2.2s4 1 4 2.2-1.8 2.2-4 2.2-4-1-4-2.2Z" />
+        <path d="M12 14.2v4.6c0 1.2 1.8 2.2 4 2.2s4-1 4-2.2v-4.6" />
+        <path d="M24.5 5.5l.45 1.25 1.25.45-1.25.45-.45 1.25-.45-1.25-1.25-.45 1.25-.45.45-1.25Z" />
+      </svg>
+      <span class="brand-text">
+        <strong>En2SQL</strong>
+        <small>Text-to-SQL Query Generator</small>
+      </span>
+    </a>
+
+    <section class="auth-card">
+      <h1>Sign in to continue</h1>
+      <p class="auth-card__text">Verify your email to access your En2SQL workspace.</p>
+
+      <form id="login-flow-form" class="auth-form">
+        <div id="auth-step-email">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="username" placeholder="you@example.com" required />
+
+          <label for="role">Role</label>
+          <select id="role" name="role" class="auth-select" required>
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+
+          <button id="btn-send-otp" class="btn btn-primary" type="button">Send OTP</button>
+        </div>
+
+        <div id="auth-step-otp" hidden>
+          <label for="otp">OTP</label>
+          <input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter 6-digit OTP" maxlength="6" />
+          <button id="btn-verify-otp" class="btn btn-primary" type="button">Verify OTP</button>
+        </div>
+
+        <div id="auth-step-password" hidden>
+          <label id="password-label" for="password">Admin Password</label>
+          <div class="password-field">
+            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Create or enter admin password" minlength="6" />
+            <button id="btn-toggle-password" class="password-toggle" type="button" aria-label="Show password" aria-pressed="false">👁</button>
+          </div>
+          <button id="btn-login" class="btn btn-primary" type="button">Login as Admin</button>
+        </div>
+      </form>
+
+      <p id="auth-message" class="auth-message" hidden></p>
+      <p id="auth-error" class="auth-error" hidden></p>
+      <a class="auth-back" href="index.html">Back to Home</a>
+    </section>
+  </main>
+
+  <script>
+    const API_BASE_URL = "http://127.0.0.1:5000";
+    const BACKEND_CONNECTION_MESSAGE =
+      "Unable to connect to the backend server. Please make sure Flask is running on http://127.0.0.1:5000.";
+
+    const state = {
+      email: "",
+      role: "user",
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const emailInput = $("email");
+    const roleSelect = $("role");
+    const otpInput = $("otp");
+    const passwordInput = $("password");
+    const errorEl = $("auth-error");
+    const messageEl = $("auth-message");
+    const stepOtp = $("auth-step-otp");
+    const stepPassword = $("auth-step-password");
+    const passwordLabel = $("password-label");
+    const loginButton = $("btn-login");
+    const togglePasswordButton = $("btn-toggle-password");
+
+    function completeLogin(data) {
+      sessionStorage.removeItem("en2sql.frontendState");
+      localStorage.setItem("en2sql.token", data.token);
+      localStorage.setItem("en2sql.role", data.role);
+      localStorage.setItem("en2sql.email", data.email);
+      localStorage.setItem("en2sql.name", data.name || data.email);
+      window.location.href = "app.html";
+    }
+
+    function showMessage(text) {
+      messageEl.textContent = text;
+      messageEl.hidden = false;
+      errorEl.hidden = true;
+    }
+
+    function showError(text) {
+      errorEl.textContent = text;
+      errorEl.hidden = false;
+      messageEl.hidden = true;
+    }
+
+    $("login-flow-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+    });
+
+    async function post(endpoint, body) {
+      const url = `${API_BASE_URL}${endpoint}`;
+      if (endpoint === "/api/auth/send-otp") {
+        console.log("Sending OTP request to:", url);
+      }
+
+      let response;
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (error) {
+        throw new Error(BACKEND_CONNECTION_MESSAGE);
+      }
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || data.error || "Request failed");
+      return data;
+    }
+
+    $("btn-send-otp").addEventListener("click", async () => {
+      state.email = emailInput.value.trim();
+      state.role = roleSelect.value;
+      try {
+        const data = await post("/api/auth/send-otp", {
+          email: state.email,
+          role: state.role,
+        });
+        stepOtp.hidden = false;
+        stepPassword.hidden = true;
+        passwordInput.value = "";
+        otpInput.focus();
+        showMessage(data.message || "OTP sent.");
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+
+    $("btn-verify-otp").addEventListener("click", async () => {
+      try {
+        const data = await post("/api/auth/verify-otp", {
+          email: state.email,
+          role: state.role,
+          otp: otpInput.value.trim(),
+        });
+
+        if (data.login_complete) {
+          showMessage(data.message || "OTP verified. Login successful.");
+          completeLogin(data);
+          return;
+        }
+
+        stepPassword.hidden = false;
+        passwordLabel.textContent = "Admin Password";
+        passwordInput.placeholder = "Create or enter admin password";
+        passwordInput.autocomplete = "current-password";
+        loginButton.textContent = "Login as Admin";
+        passwordInput.focus();
+        showMessage(data.message || "OTP verified successfully.");
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+
+    loginButton.addEventListener("click", async () => {
+      try {
+        if (passwordInput.value.length < 6) {
+          showError("Password must be at least 6 characters.");
+          return;
+        }
+
+        const data = await post("/api/auth/admin-password-login", {
+          email: state.email,
+          password: passwordInput.value,
+        });
+
+        completeLogin(data);
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+
+    togglePasswordButton.addEventListener("click", () => {
+      const isPassword = passwordInput.type === "password";
+      passwordInput.type = isPassword ? "text" : "password";
+      togglePasswordButton.setAttribute("aria-pressed", String(isPassword));
+      togglePasswordButton.setAttribute("aria-label", isPassword ? "Hide password" : "Show password");
+      togglePasswordButton.textContent = isPassword ? "🙈" : "👁";
+      passwordInput.focus();
+    });
+  </script>
+</body>
+</html>

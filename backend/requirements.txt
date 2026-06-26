@@ -5,6 +5,10 @@ Flask>=3.0.0
 flask-cors>=4.0.0
 SQLAlchemy>=2.0.0
 sqlparse>=0.5.0
+PyJWT>=2.8.0
+Werkzeug>=3.0.0
+python-dotenv>=1.0.0
+Flask-Limiter>=3.5.0
 
 # Database drivers (install the one matching your target DB)
 PyMySQL>=1.1.0          # MySQL

@@ -1,218 +1,218 @@
-# Natural Language to SQL Generator
+# En2SQL — Local-first Text-to-SQL Query Generator
 
-An academic full-stack project that converts plain English sentences into SQL queries for **MySQL** and **PostgreSQL**. The system uses **rule-based NLP** and **SQL templates** — no external paid APIs — so every step is explainable during viva presentations.
+En2SQL converts simple English prompts into SQL queries with explanation, validation, impact analysis, and MySQL/PostgreSQL dialect support.
 
----
+The app now uses a single professional login page with email OTP verification, admin password protection, JWT authentication, and role-based access.
 
-## Features
+## Local setup
 
-| # | Feature | Module |
-|---|---------|--------|
-| 1 | Generated SQL query | `query_generator.py` |
-| 2 | Human-readable explanation | `query_explainer.py` |
-| 3 | Affected tables | `impact_analyzer.py` |
-| 4 | Affected columns | `impact_analyzer.py` |
-| 5 | Expected output / impact | `impact_analyzer.py` |
-| 6 | SQL validation (sqlparse) | `validator.py` |
-| 7 | Optimization suggestions | `validator.py` |
-| 8 | Risk warnings | `validator.py` |
-| 9 | Optional query execution | `database.py` + `/api/execute` |
-| 10 | Query history | `history.py` |
-
----
-
-## Project Structure
-
-```
-sql-generator/
-├── backend/
-│   ├── app.py               # Flask routes — orchestrates the pipeline
-│   ├── config.py            # Environment & database configuration
-│   ├── database.py          # SQLAlchemy connections (MySQL / PostgreSQL)
-│   ├── schema_reader.py     # Reads table/column metadata
-│   ├── prompt_processor.py  # Rule-based NLP intent detection
-│   ├── query_generator.py   # SQL template builders
-│   ├── query_explainer.py   # Plain-English explanations
-│   ├── impact_analyzer.py   # Tables, columns, and impact analysis
-│   ├── validator.py         # sqlparse validation & risk detection
-│   ├── history.py           # JSON-based query history
-│   └── requirements.txt
-├── frontend/
-│   ├── index.html           # UI layout
-│   ├── style.css            # Styling
-│   └── script.js            # API calls & result rendering
-├── sample_database/
-│   ├── mysql_schema.sql     # MySQL CREATE TABLE scripts
-│   ├── postgresql_schema.sql
-│   └── sample_data.sql      # Demo seed data
-├── tests/
-│   ├── conftest.py          # Pytest path setup
-│   └── test_query_generation.py
-└── README.md
-```
-
----
-
-## Architecture
-
-```
-User Input (English)
-       │
-       ▼
- prompt_processor.py   ← keyword matching, intent detection
-       │
-       ▼
- query_generator.py    ← SQL templates (MySQL / PostgreSQL)
-       │
-       ├──► query_explainer.py    → explanation
-       ├──► impact_analyzer.py   → tables, columns, impact
-       ├──► validator.py         → syntax, risks, optimizations
-       └──► history.py            → save to JSON
-       │
-       ▼
-  Flask API Response  →  frontend/script.js  →  UI
-```
-
----
-
-## Prerequisites
-
-- Python 3.10+
-- MySQL 8+ **or** PostgreSQL 14+ (optional for offline demo)
-- pip
-
----
-
-## Setup
-
-### 1. Clone / open the project
-
-```bash
-cd sql-generator
-```
-
-### 2. Install Python dependencies
+### Backend
 
 ```bash
 cd backend
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 3. Configure database (optional)
-
-Set environment variables or edit defaults in `backend/config.py`:
-
-```bash
-export MYSQL_HOST=localhost
-export MYSQL_USER=root
-export MYSQL_PASSWORD=yourpassword
-export MYSQL_DATABASE=university_db
-```
-
-For PostgreSQL:
-
-```bash
-export POSTGRES_HOST=localhost
-export POSTGRES_USER=postgres
-export POSTGRES_PASSWORD=yourpassword
-export POSTGRES_DATABASE=university_db
-```
-
-### 4. Load sample schema and data
-
-**MySQL:**
-
-```bash
-mysql -u root -p < ../sample_database/mysql_schema.sql
-mysql -u root -p university_db < ../sample_database/sample_data.sql
-```
-
-**PostgreSQL:**
-
-```bash
-psql -U postgres -d university_db -f ../sample_database/postgresql_schema.sql
-psql -U postgres -d university_db -f ../sample_database/sample_data.sql
-```
-
-### 5. Run the application
-
-```bash
+cd ..
+cp .env.example .env
 cd backend
 python app.py
 ```
 
-Open [http://localhost:5000](http://localhost:5000) in your browser.
+### Frontend
 
----
+Open with Live Server:
 
-## Example Prompts
+```text
+frontend/index.html
+```
 
-| Natural Language | Expected Action |
-|-----------------|-----------------|
-| Show all students | SELECT from students |
-| List students where age greater than 20 | SELECT with WHERE |
-| Count number of courses | SELECT with COUNT |
-| Show top 5 students order by name | SELECT with ORDER BY + LIMIT |
-| Delete students where age equals 18 | DELETE with WHERE (risky) |
+Flow:
 
----
+1. Open `frontend/index.html`.
+2. Click `Get Started`.
+3. Sign in at `frontend/login.html`.
+4. Use `frontend/app.html` according to your role.
 
-## API Endpoints
+## Authentication flow
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/` | Frontend UI |
-| GET | `/api/health` | Health check + DB connectivity |
-| GET | `/api/schema?db_type=mysql` | Available tables |
-| POST | `/api/generate` | Generate SQL from natural language |
-| POST | `/api/execute` | Execute a validated query |
-| GET | `/api/history` | Query history |
-| DELETE | `/api/history` | Clear history |
+There is one login page: `frontend/login.html`.
 
-### Generate request example
+1. Enter email.
+2. Select role: `User` or `Admin`.
+3. Click `Send OTP`.
+4. Enter OTP.
+5. User role logs in immediately after OTP verification.
+6. Admin role must verify OTP, then create or enter the admin password.
+7. On success, the frontend stores token, role, and email in `localStorage` and opens `app.html`.
+
+For local development, OTPs are stored in memory. Production should use Redis or a database-backed OTP store.
+
+## Admin email rule
+
+Only this email can authenticate as admin:
+
+```text
+anjaliadhikari7890@gmail.com
+```
+
+If any other email selects the admin role:
+
+- login is blocked;
+- a friendly error is returned;
+- an alert email is sent to the admin email when SMTP is configured;
+- if SMTP is not configured, the alert body is logged for backend debugging.
+
+All other valid emails can sign in as user.
+
+## OTP setup
+
+`.env.example` includes:
+
+```text
+ADMIN_EMAIL=anjaliadhikari7890@gmail.com
+OTP_EXPIRY_MINUTES=5
+```
+
+If SMTP is not configured or email delivery fails, En2SQL does not crash. It returns a clear error instead of relying on a terminal OTP:
 
 ```json
-POST /api/generate
 {
-  "prompt": "show all students where age greater than 20",
-  "db_type": "mysql"
+  "success": false,
+  "message": "Email OTP service is not configured properly. Please check SMTP settings."
 }
 ```
 
----
+## SMTP setup
 
-## Viva Talking Points
+Configure SMTP in `.env`:
 
-1. **Why rule-based NLP?** — Transparent keyword matching; every decision traceable in `prompt_processor.py`.
-2. **Why sqlparse?** — Industry-standard SQL tokenizer; validates structure without executing.
-3. **Why SQLAlchemy?** — Single ORM layer supports both MySQL and PostgreSQL with dialect-specific URIs.
-4. **Safety** — Destructive queries require explicit confirmation; risk detection in `validator.py`.
-5. **Modularity** — Each concern in its own file; Flask `app.py` only orchestrates.
-
----
-
-## Running Tests
-
-Automated tests verify SQL generation for MySQL and PostgreSQL using pytest.
-
-```bash
-cd backend
-pip install -r requirements.txt
-python -m pytest ../tests
+```text
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_email@gmail.com
+SMTP_PASSWORD=your_gmail_app_password
+SMTP_FROM=your_email@gmail.com
 ```
 
-Tests cover SELECT, COUNT, UPDATE, DELETE, INNER JOIN, LEFT JOIN, and TRANSACTION prompts across both database types.
+For Gmail, use an app password rather than your normal account password.
 
----
+OTP email subject:
 
-## Current Status
+```text
+Your En2SQL Login OTP
+```
 
-Core pipeline is implemented with automated test coverage. Remaining enhancements:
+## Role-based access
 
-- [ ] Full schema file parsing in `schema_reader.py`
-- [ ] Index-aware optimization suggestions
+| Feature | Admin | User |
+|---|---:|---:|
+| Generate SQL | Yes | Yes |
+| Multiple query options | Yes | Yes |
+| MySQL/PostgreSQL dialect selection | Yes | Yes |
+| Query explanation | Yes | Yes |
+| Query validation | Yes | Yes |
+| Optimization suggestions | Yes | Yes |
+| Generic expected impact | Yes | Yes |
+| Detailed impact / exact row counts | Yes | No |
+| Affected tables | Yes | No |
+| Affected columns | Yes | No |
+| Load schema | Yes | No |
+| Load history | Yes | No |
+| Execute query | Yes | No |
+| Execution results | Yes | No |
 
----
+User mode note:
+
+```text
+User mode allows SQL generation and explanation only. Schema, history, and execution are restricted.
+```
+
+Admin-only backend APIs are protected with role checks. A user manually calling `/api/schema`, `/api/history`, or `/api/execute` receives `403 Access denied`.
+
+## API endpoints
+
+Authentication:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/auth/send-otp` | Send OTP to email |
+| POST | `/api/auth/verify-otp` | Verify OTP |
+| POST | `/api/auth/admin-password-login` | Complete admin login after OTP |
+
+Application:
+
+| Method | Endpoint | Roles |
+|---|---|---|
+| POST | `/api/generate` | admin, user |
+| POST | `/api/execute` | admin |
+| GET | `/api/schema` | admin |
+| GET | `/api/history` | admin |
+| DELETE | `/api/history` | admin |
+
+## Security features added
+
+- Passwords are hashed with Werkzeug.
+- JWT secret comes from environment variables.
+- `.env` is ignored by Git.
+- OTPs expire after a configurable time.
+- Unauthorized admin attempts trigger an alert.
+- Basic rate limiting:
+  - send OTP: 5 per minute
+  - verify OTP: 10 per minute
+  - login: 5 per minute
+  - generate SQL: 20 per minute
+  - admin APIs: 10 per minute
+- Unsafe SQL/object-modification requests are blocked.
+- Users cannot access admin-only APIs even manually.
+
+## Local-first privacy
+
+En2SQL is local-first. By default, prompts and database data are not sent to external AI services.
+
+Default:
+
+```text
+LLM_PROVIDER=rule_based
+```
+
+This uses the local rule-based backend only.
+
+## Llama / local LLM optional support
+
+Optional local Llama support can be configured later with:
+
+```text
+LLM_PROVIDER=local_llama
+LOCAL_LLM_URL=http://localhost:11434
+LOCAL_LLM_MODEL=llama3
+```
+
+Any local LLM integration should receive only minimal metadata. It must never receive actual database rows, passwords, tokens, environment variables, or execution results.
+
+## Existing SQL features preserved
+
+- SQL generation
+- Multiple query options
+- MySQL/PostgreSQL syntax differences
+- Query explanation bullet points
+- Validation status
+- Expected impact
+- Unsupported schema warning
+- Unsafe request warning
+- Admin schema drawer
+- Admin history drawer
+- Admin execution and results
+
+## Git hygiene
+
+`.gitignore` excludes:
+
+- `.env`
+- `.venv/`
+- `__pycache__/`
+- `*.pyc`
+- `backend/data/`
 
 ## License
 

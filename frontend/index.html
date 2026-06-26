@@ -6,118 +6,63 @@
   <title>En2SQL — Text-to-SQL Query Generator</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body class="landing-page">
-  <nav class="navbar landing-navbar">
-    <a class="navbar__brand landing-brand" href="#home" aria-label="En2SQL home">
-      <div class="navbar__logo">E2S</div>
-      <div>
-        <div class="navbar__title">En2SQL</div>
-        <div class="navbar__tagline">Text-to-SQL Query Generator</div>
-      </div>
+<body class="landing-page landing-page--minimal">
+  <header class="landing-header">
+    <a class="brand landing-wordmark" href="index.html" aria-label="En2SQL home">
+      <svg class="brand-mark wordmark-symbol" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M11 7.5C7.5 9.5 5.5 12.4 5.5 16s2 6.5 5.5 8.5" />
+        <path d="M21 7.5c3.5 2 5.5 4.9 5.5 8.5s-2 6.5-5.5 8.5" />
+        <path d="M12 14.2c0-1.2 1.8-2.2 4-2.2s4 1 4 2.2-1.8 2.2-4 2.2-4-1-4-2.2Z" />
+        <path d="M12 14.2v4.6c0 1.2 1.8 2.2 4 2.2s4-1 4-2.2v-4.6" />
+        <path d="M24.5 5.5l.45 1.25 1.25.45-1.25.45-.45 1.25-.45-1.25-1.25-.45 1.25-.45.45-1.25Z" />
+      </svg>
+      <span class="brand-text"><strong>En2SQL</strong></span>
     </a>
-    <div class="navbar__actions">
-      <a class="nav-link" href="#home">Home</a>
-      <a class="nav-link" href="#about">About</a>
-      <a class="btn btn-nav" href="app.html">Get Started</a>
-    </div>
-  </nav>
+    <nav class="landing-header__nav" aria-label="Landing navigation">
+      <a href="#about">About</a>
+      <a href="#privacy">Privacy</a>
+      <a href="login.html">Get Started</a>
+    </nav>
+  </header>
 
-  <main id="home">
-    <section class="landing-hero">
-      <div class="landing-hero__inner">
-        <div class="landing-hero__content">
-          <div class="landing-logo-mark">E2S</div>
-          <p class="hero__eyebrow">Natural Language SQL Assistant</p>
-          <h1 class="landing-title">En2SQL</h1>
-          <p class="landing-tagline">Text-to-SQL Query Generator</p>
-          <p class="landing-description">
-            En2SQL converts simple English prompts into SQL queries with explanations,
-            validation, impact analysis, and support for MySQL and PostgreSQL.
-          </p>
-          <div class="hero__actions">
-            <a class="btn btn-primary btn-hero" href="app.html">Get Started</a>
-            <a class="btn btn-secondary btn-hero" href="#features">View Features</a>
-          </div>
-        </div>
-
-        <aside class="hero-preview landing-preview" aria-label="Static SQL generator preview">
-          <div class="hero-preview__topbar">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <div class="hero-preview__section">
-            <p class="hero-preview__label">English Prompt</p>
-            <p class="hero-preview__prompt">Show top 5 highest-paid employees</p>
-          </div>
-          <div class="hero-preview__section">
-            <p class="hero-preview__label">Generated SQL</p>
-            <pre class="hero-preview__sql">SELECT *
-FROM employees
-ORDER BY salary DESC
-LIMIT 5;</pre>
-          </div>
-          <div class="hero-preview__badges">
-            <span>MySQL</span>
-            <span>Validated</span>
-            <span>Read-only</span>
-          </div>
-        </aside>
+  <main id="home" class="minimal-landing">
+    <section class="minimal-landing__card" aria-labelledby="landing-title">
+      <svg class="hero-logo-mark" viewBox="0 0 72 72" role="img" aria-label="En2SQL logo">
+        <defs>
+          <linearGradient id="heroLogoGradient" x1="10" y1="8" x2="62" y2="64" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#60a5fa" />
+            <stop offset="1" stop-color="#22d3ee" />
+          </linearGradient>
+        </defs>
+        <path d="M25 14C16.6 18.8 11.8 26.5 11.8 36S16.6 53.2 25 58" />
+        <path d="M47 14c8.4 4.8 13.2 12.5 13.2 22S55.4 53.2 47 58" />
+        <path d="M24 31.3c0-3.1 5.4-5.6 12-5.6s12 2.5 12 5.6-5.4 5.6-12 5.6-12-2.5-12-5.6Z" />
+        <path d="M24 31.3v9.4c0 3.1 5.4 5.6 12 5.6s12-2.5 12-5.6v-9.4" />
+        <path d="M56.5 13.8l1.1 3.1 3.1 1.1-3.1 1.1-1.1 3.1-1.1-3.1-3.1-1.1 3.1-1.1 1.1-3.1Z" />
+      </svg>
+      <h1 id="landing-title" class="minimal-landing__title">En2SQL</h1>
+      <p class="minimal-landing__tagline">Text-to-SQL Query Generator</p>
+      <p class="minimal-landing__description">
+        Generate, explain, and validate SQL queries from simple English prompts with
+        local-first privacy and role-based access.
+      </p>
+      <div class="landing-pill-row" aria-label="Key En2SQL features">
+        <span>Local-first privacy</span>
+        <span>Role-based access</span>
+        <span>MySQL + PostgreSQL</span>
       </div>
-    </section>
-
-    <section id="features" class="features-section landing-section" aria-labelledby="features-title">
-      <div class="section-heading section-heading--center">
-        <p class="section-kicker">Features</p>
-        <h2 id="features-title">Everything you need to turn English into reliable SQL.</h2>
-      </div>
-      <div class="features-grid">
-        <article class="feature-card">
-          <div class="feature-card__icon">Aa</div>
-          <h3>Natural Language Input</h3>
-          <p>Write database requests in simple English.</p>
-        </article>
-        <article class="feature-card">
-          <div class="feature-card__icon">SQL</div>
-          <h3>SQL Generation</h3>
-          <p>Generate clean SQL queries for MySQL and PostgreSQL.</p>
-        </article>
-        <article class="feature-card">
-          <div class="feature-card__icon">•</div>
-          <h3>Query Explanation</h3>
-          <p>Understand SQL using simple bullet-point explanations.</p>
-        </article>
-        <article class="feature-card">
-          <div class="feature-card__icon">✓</div>
-          <h3>Safe Validation</h3>
-          <p>Detect unsupported, unsafe, or unclear requests before execution.</p>
-        </article>
-      </div>
-    </section>
-
-    <section id="about" class="about-section landing-section" aria-labelledby="about-title">
-      <div class="about-card">
-        <p class="section-kicker">About</p>
-        <h2 id="about-title">Why En2SQL?</h2>
-        <p>
-          En2SQL is designed to make SQL easier for learners, developers, and non-technical users by
-          converting natural language into structured SQL queries. It also explains the query,
-          identifies affected tables and columns, and predicts the expected impact.
-        </p>
-      </div>
+      <a class="primary-cta" href="login.html">
+        <span>Get Started</span>
+        <span class="cta-arrow" aria-hidden="true">→</span>
+      </a>
+      <p class="minimal-landing__secure-note">Secure local workspace for SQL generation</p>
+      <div id="about" class="sr-anchor" aria-hidden="true"></div>
+      <div id="privacy" class="sr-anchor" aria-hidden="true"></div>
     </section>
   </main>
 
-  <footer class="landing-footer">
-    <div>
-      <p class="landing-footer__title">En2SQL — Text-to-SQL Query Generator</p>
-      <p class="landing-footer__text">Built for natural language SQL generation, explanation, and validation.</p>
-    </div>
-    <nav class="landing-footer__links" aria-label="Footer navigation">
-      <a href="#home">Home</a>
-      <a href="#features">Features</a>
-      <a href="app.html">Get Started</a>
-    </nav>
+  <footer class="minimal-footer">
+    En2SQL — Local-first Text-to-SQL Query Generator
   </footer>
 </body>
 </html>

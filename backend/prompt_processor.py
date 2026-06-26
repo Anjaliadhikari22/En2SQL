@@ -79,7 +79,7 @@ DIRECT_SQL_RE = re.compile(
 
 DANGEROUS_SQL_RE = re.compile(
     r"\b("
-    r"DROP\s+TABLE|TRUNCATE\b|ALTER\s+TABLE|CREATE\s+USER|GRANT\b|REVOKE\b|"
+    r"DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE\b|ALTER\s+TABLE|CREATE\s+USER|GRANT\b|REVOKE\b|"
     r"DELETE\s+FROM\b"
     r")",
     re.IGNORECASE,

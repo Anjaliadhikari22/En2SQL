@@ -15,18 +15,26 @@
 
   <!-- App navigation -->
   <nav class="navbar">
-    <div class="navbar__brand">
-      <div class="navbar__logo">E2S</div>
-      <div>
-        <div class="navbar__title">En2SQL</div>
-        <div class="navbar__tagline">Text-to-SQL Query Generator</div>
-      </div>
-    </div>
+    <a class="brand app-brand" href="index.html" aria-label="En2SQL home">
+      <svg class="brand-mark wordmark-symbol" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M11 7.5C7.5 9.5 5.5 12.4 5.5 16s2 6.5 5.5 8.5" />
+        <path d="M21 7.5c3.5 2 5.5 4.9 5.5 8.5s-2 6.5-5.5 8.5" />
+        <path d="M12 14.2c0-1.2 1.8-2.2 4-2.2s4 1 4 2.2-1.8 2.2-4 2.2-4-1-4-2.2Z" />
+        <path d="M12 14.2v4.6c0 1.2 1.8 2.2 4 2.2s4-1 4-2.2v-4.6" />
+        <path d="M24.5 5.5l.45 1.25 1.25.45-1.25.45-.45 1.25-.45-1.25-1.25-.45 1.25-.45.45-1.25Z" />
+      </svg>
+      <span class="brand-text">
+        <strong>En2SQL</strong>
+        <small>Text-to-SQL Query Generator</small>
+      </span>
+    </a>
     <div class="navbar__actions">
       <span id="status-badge" class="status-badge status-badge--checking">Checking…</span>
+      <span id="role-badge" class="role-badge">Checking role…</span>
       <a class="nav-link" href="index.html">Home</a>
       <button id="btn-load-schema" class="btn btn-nav" type="button">Load Schema</button>
       <button id="btn-load-history" class="btn btn-nav" type="button">Load History</button>
+      <button id="btn-logout" class="btn btn-nav" type="button">Logout</button>
     </div>
   </nav>
 
@@ -36,6 +44,7 @@
       <p class="section-kicker">Query workspace</p>
       <h1>Generate and review SQL in one focused place.</h1>
       <p>Describe your request, choose a database dialect, and review the SQL with explanations before execution.</p>
+      <p id="role-note" class="role-note">Checking access level…</p>
     </div>
 
     <div class="workspace__grid">

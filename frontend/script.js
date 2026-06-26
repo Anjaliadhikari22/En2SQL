@@ -5,11 +5,8 @@
 
 document.addEventListener("DOMContentLoaded", () => {
 
-const API_BASE = (() => {
-  if (window.location.protocol === "file:") return "http://localhost:5000";
-  if (window.location.port === "5000") return "";
-  return "http://localhost:5000";
-})();
+const API_BASE_URL = "http://127.0.0.1:5000";
+const API_BASE = API_BASE_URL;
 
 const SAMPLE_PROMPTS = [
   "Show all employees whose salary is greater than 50000",
@@ -22,6 +19,19 @@ const SAMPLE_PROMPTS = [
 
 const DESTRUCTIVE_TYPES = new Set(["UPDATE", "DELETE", "TRANSACTION"]);
 const STORAGE_KEY = "en2sql.frontendState";
+const AUTH_TOKEN_KEY = "en2sql.token";
+const AUTH_ROLE_KEY = "en2sql.role";
+const AUTH_NAME_KEY = "en2sql.name";
+const AUTH_EMAIL_KEY = "en2sql.email";
+
+const authToken = localStorage.getItem(AUTH_TOKEN_KEY);
+const authRole = localStorage.getItem(AUTH_ROLE_KEY);
+const authName = localStorage.getItem(AUTH_NAME_KEY) || localStorage.getItem(AUTH_EMAIL_KEY) || "";
+
+if (!authToken || !["admin", "user"].includes(authRole || "")) {
+  window.location.href = "login.html";
+  return;
+}
 
 // Persistent application state
 const appState = {
@@ -46,6 +56,9 @@ const btnCopySql = $("btn-copy-sql");
 const btnLoadHistory = $("btn-load-history");
 const btnLoadSchema = $("btn-load-schema");
 const btnViewSchema = $("btn-view-schema");
+const btnLogout = $("btn-logout");
+const roleBadge = $("role-badge");
+const roleNote = $("role-note");
 
 const backendError = $("backend-error");
 const statusBadge = $("status-badge");
@@ -101,21 +114,37 @@ const toastEl = $("toast");
 async function apiPost(endpoint, body) {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${authToken}`,
+    },
     body: JSON.stringify(body),
   });
   let data;
   try { data = await response.json(); } catch { throw new Error(`Invalid response (${response.status})`); }
+  if (response.status === 401) handleAuthExpired();
   if (!response.ok) throw new Error(data.error || data.message || `Request failed (${response.status})`);
   return data;
 }
 
 async function apiGet(endpoint) {
-  const response = await fetch(`${API_BASE}${endpoint}`);
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    headers: { "Authorization": `Bearer ${authToken}` },
+  });
   let data;
   try { data = await response.json(); } catch { throw new Error(`Invalid response (${response.status})`); }
+  if (response.status === 401) handleAuthExpired();
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
   return data;
+}
+
+function handleAuthExpired() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_ROLE_KEY);
+  localStorage.removeItem(AUTH_NAME_KEY);
+  localStorage.removeItem(AUTH_EMAIL_KEY);
+  sessionStorage.removeItem(STORAGE_KEY);
+  window.location.href = "login.html";
 }
 
 async function checkBackendHealth() {
@@ -182,6 +211,7 @@ function persistState() {
   sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
     appState,
     prompt: promptInput.value,
+    role: authRole,
   }));
 }
 
@@ -189,6 +219,10 @@ function restoreState() {
   try {
     const saved = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null");
     if (!saved) return;
+    if (saved.role && saved.role !== authRole) {
+      sessionStorage.removeItem(STORAGE_KEY);
+      return;
+    }
 
     appState.currentResponse = saved.appState?.currentResponse || null;
     appState.selectedQuery = saved.appState?.selectedQuery || "";
@@ -220,6 +254,52 @@ function setGenerateLoading(on) {
 function setGlobalLoading(on) {
   document.body.style.pointerEvents = on ? "none" : "";
   document.body.style.opacity = on ? "0.85" : "";
+}
+
+function isAdmin() {
+  return authRole === "admin";
+}
+
+function setElementHidden(el, hidden) {
+  if (el) el.hidden = hidden;
+}
+
+function applyRoleAccess() {
+  const admin = isAdmin();
+  document.body.classList.toggle("role-admin", admin);
+  document.body.classList.toggle("role-user", !admin);
+
+  if (roleBadge) {
+    roleBadge.textContent = admin ? "Admin Workspace" : "User Workspace";
+    roleBadge.className = "role-badge " + (admin ? "role-badge--admin" : "role-badge--user");
+    roleBadge.title = authName ? `Signed in as ${authName}` : "";
+  }
+
+  if (roleNote) {
+    roleNote.textContent = admin
+      ? "Full access enabled."
+      : "User mode allows SQL generation and explanation only. Schema, history, and execution are restricted.";
+  }
+
+  setElementHidden(btnLoadSchema, !admin);
+  setElementHidden(btnLoadHistory, !admin);
+  setElementHidden(executeSection, !admin || !appState.selectedQuery);
+  setElementHidden(executionBlock, !admin || executionBlock.hidden);
+  setElementHidden(schemaDrawer, !admin || schemaDrawer.hidden);
+  setElementHidden(historyDrawer, !admin || historyDrawer.hidden);
+
+  document.querySelectorAll('.tab-btn[data-tab="tables"], .tab-btn[data-tab="columns"]').forEach((el) => {
+    el.hidden = !admin;
+  });
+  ["tab-tables", "tab-columns"].forEach((id) => {
+    const pane = $(id);
+    if (pane) pane.hidden = !admin;
+  });
+
+  if (!admin) {
+    const activeHiddenTab = document.querySelector(".tab-btn.active[hidden]");
+    if (activeHiddenTab) activateExplanationTab();
+  }
 }
 
 function renderTagList(el, items, empty = "None detected") {
@@ -423,6 +503,7 @@ function showEmptyState() {
   outputSql.textContent = "";
   queryOptionsContainer.innerHTML = "";
   demoModeNote.hidden = true;
+  applyRoleAccess();
 }
 
 function renderUnsupportedSchema(data) {
@@ -452,6 +533,7 @@ function renderUnsupportedSchema(data) {
     data.warning || "The system avoided generating an incorrect hallucinated query.";
   unsupportedOptimization.textContent =
     data.optimization_suggestion || "Add the required schema or use one of the available demo tables.";
+  applyRoleAccess();
 }
 
 function renderMultiplePromptsWarning(data) {
@@ -485,6 +567,7 @@ function renderMultiplePromptsWarning(data) {
   outputImpact.textContent = data.expected_output || "No SQL query was generated because multiple prompts were entered together.";
   outputOptimization.textContent = data.optimization_suggestion || "Split your input into separate prompts and generate them one by one.";
   outputWarning.textContent = data.warning || "Multiple prompts detected.";
+  applyRoleAccess();
 }
 
 function renderNoSqlWarning(data, options = {}) {
@@ -519,6 +602,7 @@ function renderNoSqlWarning(data, options = {}) {
   outputOptimization.textContent =
     data.optimization_suggestion || options.optimization || "Try entering one clear SQL request in English.";
   outputWarning.textContent = data.warning || options.warning || "No SQL generated.";
+  applyRoleAccess();
 }
 
 function displayResults(data) {
@@ -618,6 +702,7 @@ function displayResults(data) {
   outputImpact.textContent = data.expected_output || "—";
   outputOptimization.textContent = data.optimization_suggestion || "—";
   outputWarning.textContent = warningText || "No warnings for this query.";
+  applyRoleAccess();
 }
 
 // ---------------------------------------------------------------------------
@@ -770,6 +855,10 @@ async function handleGenerate(event) {
 }
 
 async function handleExecute() {
+  if (!isAdmin()) {
+    showToast("Execution is restricted to admin.", "error");
+    return;
+  }
   const query = getSelectedQuery();
   if (!query) { showToast("No query selected.", "error"); return; }
 
@@ -814,6 +903,7 @@ async function handleCopySql() {
 }
 
 async function loadHistory() {
+  if (!isAdmin()) { showToast("History is restricted to admin.", "error"); return; }
   if (!backendOnline) { showToast("Backend is not reachable.", "error"); return; }
   setGlobalLoading(true);
   try {
@@ -828,6 +918,7 @@ async function loadHistory() {
 }
 
 async function loadSchema() {
+  if (!isAdmin()) { showToast("Schema access is restricted to admin.", "error"); return; }
   if (!backendOnline) { showToast("Backend is not reachable.", "error"); return; }
   setGlobalLoading(true);
   try {
@@ -855,6 +946,16 @@ function clearAll(event) {
   showEmptyState();
   executionBlock.hidden = true;
   promptInput.focus();
+  applyRoleAccess();
+}
+
+function logout() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_ROLE_KEY);
+  localStorage.removeItem(AUTH_NAME_KEY);
+  localStorage.removeItem(AUTH_EMAIL_KEY);
+  sessionStorage.removeItem(STORAGE_KEY);
+  window.location.href = "index.html";
 }
 
 function initSampleChips() {
@@ -892,6 +993,7 @@ btnCopySql.addEventListener("click", handleCopySql);
 btnLoadHistory.addEventListener("click", loadHistory);
 btnLoadSchema.addEventListener("click", loadSchema);
 btnViewSchema?.addEventListener("click", loadSchema);
+btnLogout?.addEventListener("click", logout);
 
 promptInput.addEventListener("input", persistState);
 dbTypeSelect.addEventListener("change", () => {
@@ -906,6 +1008,7 @@ promptInput.addEventListener("keydown", (e) => {
   }
 });
 
+applyRoleAccess();
 restoreState();
 checkBackendHealth();
 setInterval(checkBackendHealth, 30000);

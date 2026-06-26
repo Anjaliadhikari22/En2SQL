@@ -19,6 +19,21 @@ import traceback
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+from auth import (
+    admin_password_login,
+    clear_otp,
+    create_user_if_missing,
+    create_otp,
+    create_token,
+    get_request_user,
+    normalize_email,
+    normalize_role,
+    send_otp_email,
+    send_unauthorized_admin_alert,
+    validate_role_email,
+    verify_otp,
+)
+from auth import require_role
 from config import Config
 from database import execute_query, is_db_connected, test_connection
 from history import add_entry, clear_history, get_history
@@ -27,6 +42,7 @@ from prompt_processor import process_prompt
 from query_explainer import generate_explanation
 from query_generator import generate_all_queries
 from schema_reader import get_schema_details, get_table_names, load_schema
+from security import create_limiter
 from validator import validate_query, get_statement_type
 
 # ---------------------------------------------------------------------------
@@ -35,7 +51,8 @@ from validator import validate_query, get_statement_type
 
 app = Flask(__name__, static_folder="../frontend", static_url_path="")
 app.config.from_object(Config)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+limiter = create_limiter(app)
 
 
 def _normalize_database_type(raw: str) -> str:
@@ -48,7 +65,28 @@ def _normalize_database_type(raw: str) -> str:
     raise ValueError(f"Unsupported database_type: {raw}")
 
 
-def _run_pipeline(prompt: str, database_type: str) -> dict:
+def _generic_user_impact(query_type: str) -> str:
+    """Return privacy-safe impact text for non-admin users."""
+    if query_type in ("INVALID_PROMPT", "MULTIPLE_PROMPTS_DETECTED", "UNSUPPORTED_SCHEMA", "UNSAFE_REQUEST"):
+        return "No SQL query was generated."
+    if query_type == "SELECT":
+        return "This query may return matching records. Exact row counts are restricted to admin."
+    return "This query may affect database records. Execution and exact row counts are restricted to admin."
+
+
+def _sanitize_response_for_role(response: dict, role: str) -> dict:
+    """Remove admin-only metadata from user responses."""
+    if role == "admin":
+        return response
+    sanitized = dict(response)
+    sanitized["affected_tables"] = []
+    sanitized["affected_columns"] = []
+    sanitized["expected_output"] = _generic_user_impact(sanitized.get("query_type", "SELECT"))
+    sanitized["role_scope"] = "user"
+    return sanitized
+
+
+def _run_pipeline(prompt: str, database_type: str, role: str = "admin") -> dict:
     """
     Execute the full NL → SQL pipeline and return the API response dict.
 
@@ -60,6 +98,26 @@ def _run_pipeline(prompt: str, database_type: str) -> dict:
 
     # Step 1: Rule-based NLP
     intent = process_prompt(prompt, known_tables, schema)
+
+    if role == "user" and intent.get("action") in ("UPDATE", "DELETE", "TRANSACTION"):
+        return {
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "query_type": "UNSAFE_REQUEST",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "This request may modify database records.",
+                "Only admins can generate or execute UPDATE, DELETE, or transaction queries.",
+                "Please use a read-only request.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated because this operation is restricted to admin.",
+            "validation": "Restricted operation",
+            "optimization_suggestion": "Try a SELECT request that only reads data.",
+            "warning": "Admin-only operation.",
+        }
 
     if intent.get("invalid_prompt"):
         return {
@@ -153,23 +211,25 @@ def _run_pipeline(prompt: str, database_type: str) -> dict:
     # Step 5: Impact analysis (COUNT(*) used internally, not in generated_queries)
     impact = analyze_impact(selected_query, intent, schema, database_type)
 
-    # Step 6: Save to history
-    add_entry(
-        user_prompt=prompt,
-        generated_sql=selected_query,
-        database_type=database_type,
-        query_type=intent.get("action", "SELECT"),
-        explanation=explanation,
-        expected_output=impact["expected_output"],
-        affected_tables=impact["affected_tables"],
-        metadata={
-            "affected_columns": impact["affected_columns"],
-            "validation": validation_result["validation_message"],
-            "warning": validation_result["warning_message"],
-        },
-    )
+    # Step 6: Save admin generations to history. User generations are kept
+    # generation-only and are not written to the admin history file.
+    if role == "admin":
+        add_entry(
+            user_prompt=prompt,
+            generated_sql=selected_query,
+            database_type=database_type,
+            query_type=intent.get("action", "SELECT"),
+            explanation=explanation,
+            expected_output=impact["expected_output"],
+            affected_tables=impact["affected_tables"],
+            metadata={
+                "affected_columns": impact["affected_columns"],
+                "validation": validation_result["validation_message"],
+                "warning": validation_result["warning_message"],
+            },
+        )
 
-    return {
+    response = {
         "user_prompt": prompt,
         "database_type": database_type,
         "query_type": intent.get("action", "SELECT"),
@@ -183,6 +243,7 @@ def _run_pipeline(prompt: str, database_type: str) -> dict:
         "optimization_suggestion": validation_result["optimization_message"],
         "warning": validation_result["warning_message"],
     }
+    return _sanitize_response_for_role(response, role)
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +259,100 @@ def serve_index():
 # ---------------------------------------------------------------------------
 # Routes — API
 # ---------------------------------------------------------------------------
+
+@app.route("/api/auth/send-otp", methods=["POST"])
+@limiter.limit("5 per minute")
+def send_otp():
+    """Start OTP verification for a user/admin login attempt."""
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get("email", ""))
+    role = normalize_role(data.get("role", ""))
+
+    ok, message = validate_role_email(email, role)
+    if not ok:
+        if role == "admin":
+            send_unauthorized_admin_alert(
+                attempted_email=email,
+                attempted_role=role,
+                ip=request.headers.get("X-Forwarded-For", request.remote_addr or ""),
+                user_agent=request.headers.get("User-Agent", ""),
+            )
+        return jsonify({"error": "Access denied", "message": message}), 403
+
+    otp = create_otp(email, role)
+    sent = send_otp_email(email, otp)
+    if not sent:
+        clear_otp(email, role)
+        return jsonify({
+            "success": False,
+            "message": "Email OTP service is not configured properly. Please check SMTP settings.",
+        }), 503
+
+    return jsonify({
+        "success": True,
+        "message": "OTP sent successfully to your email.",
+    })
+
+
+@app.route("/api/auth/verify-otp", methods=["POST"])
+@limiter.limit("10 per minute")
+def verify_otp_route():
+    """Verify an OTP and complete user login or continue admin password login."""
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get("email", ""))
+    role = normalize_role(data.get("role", ""))
+    otp = str(data.get("otp", "")).strip()
+
+    ok, message = validate_role_email(email, role)
+    if not ok:
+        return jsonify({"error": "Access denied", "message": message}), 403
+
+    verified, msg = verify_otp(email, role, otp)
+    if not verified:
+        return jsonify({"verified": False, "message": msg}), 400
+
+    if role == "user":
+        user = create_user_if_missing(email, "user")
+        clear_otp(email, "user")
+        return jsonify({
+            "verified": True,
+            "login_complete": True,
+            "token": create_token(user),
+            "role": user["role"],
+            "email": user["email"],
+            "name": user.get("name", ""),
+            "message": "OTP verified. Login successful.",
+        })
+
+    return jsonify({
+        "verified": True,
+        "login_complete": False,
+        "requires_admin_password": True,
+        "message": "OTP verified. Please enter your admin password.",
+    })
+
+
+@app.route("/api/auth/admin-password-login", methods=["POST"])
+@limiter.limit("5 per minute")
+def admin_password_login_route():
+    """Create/verify the admin password after admin OTP verification."""
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get("email", ""))
+    password = data.get("password", "")
+
+    ok, message, user = admin_password_login(email, password)
+    if not ok or not user:
+        status = 403 if "authorized" in message.lower() else 400
+        return jsonify({"success": False, "message": message}), status
+
+    return jsonify({
+        "token": create_token(user),
+        "role": user["role"],
+        "email": user["email"],
+        "name": user.get("name", ""),
+        "message": "Admin login successful.",
+    })
+
 
 @app.route("/api/health", methods=["GET"])
 def health():
@@ -217,6 +372,8 @@ def health():
 
 
 @app.route("/api/schema", methods=["GET"])
+@limiter.limit("10 per minute")
+@require_role("admin")
 def schema():
     """
     Return HR schema details for:
@@ -230,6 +387,8 @@ def schema():
 
 
 @app.route("/api/generate", methods=["POST"])
+@limiter.limit("20 per minute")
+@require_role("admin", "user")
 def generate():
     """
     Core endpoint: natural language → SQL + full analysis.
@@ -251,7 +410,8 @@ def generate():
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        response = _run_pipeline(prompt, database_type)
+        user = get_request_user() or {}
+        response = _run_pipeline(prompt, database_type, role=user.get("role", "user"))
         return jsonify(response)
 
     except Exception as exc:
@@ -261,6 +421,8 @@ def generate():
 
 
 @app.route("/api/execute", methods=["POST"])
+@limiter.limit("10 per minute")
+@require_role("admin")
 def execute():
     """
     Execute a validated SQL query against the database (or demo mode).
@@ -350,6 +512,8 @@ def execute():
 
 
 @app.route("/api/history", methods=["GET"])
+@limiter.limit("10 per minute")
+@require_role("admin")
 def history_list():
     """
     Return all previous prompts with generated SQL, explanation,
@@ -364,6 +528,8 @@ def history_list():
 
 
 @app.route("/api/history", methods=["DELETE"])
+@limiter.limit("10 per minute")
+@require_role("admin")
 def history_clear():
     """Clear all stored history entries."""
     clear_history()
