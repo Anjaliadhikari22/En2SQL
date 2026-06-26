@@ -110,15 +110,9 @@
               The requested tables or columns are not available in the current database schema.
             </p>
             <div class="unsupported-card__section">
-              <span class="unsupported-card__label">Available HR schema</span>
+              <span class="unsupported-card__label">Suggestion</span>
               <div class="unsupported-schema-list">
-                <span>employees</span>
-                <span>departments</span>
-                <span>jobs</span>
-                <span>locations</span>
-                <span>countries</span>
-                <span>regions</span>
-                <span>dependents</span>
+                <span>Please contact the admin if this type of data needs to be added.</span>
               </div>
             </div>
             <div class="unsupported-card__section">
@@ -245,11 +239,11 @@
   <div id="confirm-modal" class="modal" hidden>
     <div class="modal__backdrop" data-close="modal"></div>
     <div class="modal__dialog">
-      <h3>Confirm query execution</h3>
+      <h3 id="confirm-title">Confirm query execution</h3>
       <p id="confirm-message" class="modal__text"></p>
       <div class="modal__actions">
         <button id="confirm-cancel" class="btn btn-secondary" type="button">Cancel</button>
-        <button id="confirm-ok" class="btn btn-danger" type="button">Execute anyway</button>
+        <button id="confirm-ok" class="btn btn-danger" type="button">Confirm and Execute</button>
       </div>
     </div>
   </div>

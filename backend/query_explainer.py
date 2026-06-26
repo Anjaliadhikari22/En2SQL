@@ -102,6 +102,45 @@ def generate_explanation(
     if intent.get("unsupported_schema"):
         return "This request needs tables that are not available in the current database, so no SQL query was generated."
 
+    pack = (intent.get("schema_pack") or "").lower()
+    if pack and pack != "hr":
+        if pack == "ecommerce" and "SUM(" in upper and "QUANTITY *" in upper:
+            return _bullets(
+                "Calculates revenue using order quantity multiplied by unit price.",
+                "Groups or sorts the result based on the requested business view.",
+                "This is a read-only query, so it does not change any data.",
+            )
+        if pack == "university":
+            return _bullets(
+                "Uses the local University schema pack.",
+                "Joins the relevant student, course, enrollment, instructor, or grade tables.",
+                "This is a read-only query, so it does not change any data.",
+            )
+        if pack == "healthcare":
+            return _bullets(
+                "Uses the local Healthcare schema pack.",
+                "Joins the relevant doctor, patient, appointment, prescription, or medicine tables.",
+                "This is a read-only query, so it does not change any data.",
+            )
+        if pack == "library":
+            return _bullets(
+                "Uses the local Library schema pack.",
+                "Joins the relevant book, author, member, or borrow record tables.",
+                "This is a read-only query, so it does not change any data.",
+            )
+        if pack == "banking":
+            return _bullets(
+                "Uses the local Banking schema pack.",
+                "Joins the relevant customer, account, transaction, or branch tables.",
+                "This is a read-only query, so it does not change any data.",
+            )
+        if pack == "booking":
+            return _bullets(
+                "Uses the local Hotel/Booking schema pack.",
+                "Joins the relevant hotel, room, guest, booking, or payment tables.",
+                "This is a read-only query, so it does not change any data.",
+            )
+
     if intent.get("grouped_ranking"):
         return _explain_grouped_ranking(intent)
 
@@ -117,10 +156,30 @@ def generate_explanation(
         return dialect_text
 
     if "FROM EMPLOYEES" in upper and re.search(r"\bSALARY\s*>\s*", upper):
+        if "AVG(SALARY)" in upper:
+            return _bullets(
+                "Shows employees whose salary is above the average salary.",
+                "Uses a subquery to calculate the average salary from the employees table.",
+                "This is a read-only query, so it does not change any data.",
+            )
         amount = _salary_threshold(sql, intent)
         return _bullets(
             f"Shows employees whose salary is greater than {amount}.",
             "Uses the employees table.",
+            "This is a read-only query, so it does not change any data.",
+        )
+
+    if "FROM EMPLOYEES" in upper and re.search(r"\bSALARY\s*<\s*\(", upper) and "AVG(SALARY)" in upper:
+        return _bullets(
+            "Shows employees whose salary is below the average salary.",
+            "Uses a subquery to calculate the average salary from the employees table.",
+            "This is a read-only query, so it does not change any data.",
+        )
+
+    if "SECOND_HIGHEST_SALARY" in upper or ("SELECT DISTINCT SALARY" in upper and "OFFSET" in upper):
+        return _bullets(
+            "Finds the second-highest distinct salary.",
+            "Avoids hardcoding any salary value.",
             "This is a read-only query, so it does not change any data.",
         )
 
@@ -145,12 +204,41 @@ def generate_explanation(
             "Uses a join between employees and departments.",
         )
 
+    if "FROM DEPARTMENTS D" in upper and "LEFT JOIN EMPLOYEES E" in upper and "IS NULL" in upper:
+        return _bullets(
+            "Shows departments that do not have any employees.",
+            "Uses a LEFT JOIN and keeps only rows where no employee matched.",
+            "This is a read-only query, so it does not change any data.",
+        )
+
     if "FROM DEPARTMENTS D" in upper and "LEFT JOIN EMPLOYEES E" in upper and "COUNT(" in upper:
         return _bullets(
             "Counts how many employees are present in each department.",
             "Shows departments with the highest employee count first.",
             "Includes departments even if they have no employees.",
         )
+
+    if "FROM EMPLOYEES" in upper and "DEPARTMENT_ID IS NULL" in upper:
+        return _bullets(
+            "Shows employees who are not assigned to any department.",
+            "Checks for NULL in the department_id column.",
+            "This is a read-only query, so it does not change any data.",
+        )
+
+    if "FROM EMPLOYEES" in upper and "GROUP BY EMAIL" in upper and "HAVING COUNT(*) > 1" in upper:
+        return _bullets(
+            "Finds duplicate email addresses.",
+            "Groups employees by email and shows only repeated emails.",
+            "This is a read-only query, so it does not change any data.",
+        )
+
+    if "FROM EMPLOYEES" in upper and "GROUP BY FIRST_NAME, LAST_NAME, EMAIL" in upper:
+        return _bullets(
+            "Finds possible duplicate employee records.",
+            "Groups by first name, last name, and email.",
+            "Shows only groups that appear more than once.",
+        )
+
 
     if "FROM EMPLOYEES E" in upper and "JOIN JOBS J" in upper:
         return _bullets(

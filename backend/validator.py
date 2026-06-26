@@ -16,6 +16,82 @@ RISKY_KEYWORDS = {"DROP", "TRUNCATE", "ALTER", "GRANT", "REVOKE"}
 DESTRUCTIVE_DML = {"DELETE", "UPDATE"}
 
 
+SCHEMA_OPERATIONS = {"CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE", "CREATE_USER"}
+
+
+def _strip_leading_comments(sql: str) -> str:
+    """Remove leading SQL comments before operation classification."""
+    text = (sql or "").strip()
+    while True:
+        new_text = re.sub(r"^\s*--[^\n]*(?:\n|$)", "", text).strip()
+        new_text = re.sub(r"^\s*/\*.*?\*/", "", new_text, flags=re.DOTALL).strip()
+        if new_text == text:
+            return text
+        text = new_text
+
+
+def classify_sql_operation(sql: str) -> str:
+    """Classify the first SQL operation, ignoring leading comments and spaces."""
+    text = _strip_leading_comments(sql)
+    upper = text.upper()
+    if not upper:
+        return "UNKNOWN"
+    if re.match(r"WITH\b", upper):
+        return "SELECT" if re.search(r"\bSELECT\b", upper) else "UNKNOWN"
+    if re.match(r"CREATE\s+USER\b", upper):
+        return "CREATE_USER"
+    if re.match(r"CREATE\s+TABLE\b", upper):
+        return "CREATE"
+    for operation in ("SELECT", "INSERT", "UPDATE", "DELETE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE"):
+        if re.match(rf"{operation}\b", upper):
+            return operation
+    return "UNKNOWN"
+
+
+def check_operation_permission(
+    operation: str,
+    role: str,
+    confirmed: bool = False,
+    *,
+    for_execution: bool = False,
+) -> dict[str, Any]:
+    """Apply En2SQL's final SQL operation permission policy."""
+    op = (operation or "UNKNOWN").upper()
+    user_role = (role or "user").lower()
+
+    if op == "SELECT":
+        if for_execution and user_role != "admin":
+            return {"allowed": False, "reason": "User accounts cannot execute SQL queries."}
+        return {"allowed": True, "reason": ""}
+
+    if op in ("INSERT", "UPDATE", "DELETE"):
+        if user_role != "admin":
+            return {"allowed": False, "reason": "User accounts are allowed to generate read-only SELECT queries only."}
+        if for_execution and not confirmed:
+            return {
+                "allowed": False,
+                "reason": "This query may modify database records. Please confirm before execution.",
+                "confirmation_required": True,
+            }
+        return {"allowed": True, "reason": "Admin modification operation requires confirmation before execution."}
+
+    if op == "CREATE":
+        return {
+            "allowed": False,
+            "reason": "Schema creation is not available from the normal Text-to-SQL workspace.",
+            "guidance": True,
+        }
+
+    if op in SCHEMA_OPERATIONS:
+        return {
+            "allowed": False,
+            "reason": "Blocked unsafe schema operation.",
+            "unsafe_schema_operation": True,
+        }
+
+    return {"allowed": False, "reason": "Unsupported or unknown SQL operation."}
+
+
 def parse_sql(sql: str) -> sqlparse.sql.Statement:
     """Parse SQL into a sqlparse Statement object."""
     formatted = sqlparse.format(sql.strip(), strip_comments=True)
@@ -25,6 +101,10 @@ def parse_sql(sql: str) -> sqlparse.sql.Statement:
 
 def get_statement_type(sql: str) -> str:
     """Return the primary DML/DDL keyword."""
+    classified = classify_sql_operation(sql)
+    if classified != "UNKNOWN":
+        return "TRANSACTION" if classified in ("BEGIN", "START") else classified
+
     upper = sql.strip().upper()
     if upper.startswith("WITH") and re.search(r"\bSELECT\b", upper):
         return "SELECT"
@@ -53,6 +133,11 @@ def validate_syntax(sql: str) -> dict[str, Any]:
     if sql.strip().startswith("-- Error"):
         errors.append(sql.strip())
         return {"valid": False, "errors": errors, "formatted_sql": sql}
+
+    operation = classify_sql_operation(sql)
+    upper = sql.upper()
+    if operation in ("UPDATE", "DELETE") and "WHERE" not in upper:
+        errors.append(f"{operation} queries must include a WHERE condition.")
 
     parsed = parse_sql(sql)
     if not parsed.tokens or str(parsed).strip() == "":

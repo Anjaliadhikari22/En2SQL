@@ -37,7 +37,10 @@
             <option value="admin">Admin</option>
           </select>
 
-          <button id="btn-send-otp" class="btn btn-primary" type="button">Send OTP</button>
+          <button id="btn-send-otp" class="btn btn-primary otp-button" type="button">
+            <span class="btn-spinner" aria-hidden="true" hidden></span>
+            <span id="send-otp-label">Send OTP</span>
+          </button>
         </div>
 
         <div id="auth-step-otp" hidden>
@@ -70,6 +73,10 @@
     const state = {
       email: "",
       role: "user",
+      isSendingOtp: false,
+      otpSent: false,
+      resendTimerId: null,
+      resendRemaining: 0,
     };
 
     const $ = (id) => document.getElementById(id);
@@ -84,6 +91,9 @@
     const passwordLabel = $("password-label");
     const loginButton = $("btn-login");
     const togglePasswordButton = $("btn-toggle-password");
+    const sendOtpButton = $("btn-send-otp");
+    const sendOtpLabel = $("send-otp-label");
+    const sendOtpSpinner = sendOtpButton.querySelector(".btn-spinner");
 
     function completeLogin(data) {
       sessionStorage.removeItem("en2sql.frontendState");
@@ -104,6 +114,56 @@
       errorEl.textContent = text;
       errorEl.hidden = false;
       messageEl.hidden = true;
+    }
+
+    function setSendOtpButton({ label, disabled = false, loading = false }) {
+      sendOtpLabel.textContent = label;
+      sendOtpButton.disabled = disabled;
+      sendOtpButton.classList.toggle("is-loading", loading);
+      sendOtpSpinner.hidden = !loading;
+    }
+
+    function stopResendCooldown() {
+      if (state.resendTimerId) {
+        clearInterval(state.resendTimerId);
+        state.resendTimerId = null;
+      }
+      state.resendRemaining = 0;
+    }
+
+    function startResendCooldown(seconds = 30) {
+      stopResendCooldown();
+      state.resendRemaining = seconds;
+      setSendOtpButton({
+        label: `Resend OTP in ${state.resendRemaining}s`,
+        disabled: true,
+        loading: false,
+      });
+
+      state.resendTimerId = setInterval(() => {
+        state.resendRemaining -= 1;
+        if (state.resendRemaining <= 0) {
+          stopResendCooldown();
+          setSendOtpButton({ label: "Resend OTP", disabled: false, loading: false });
+          return;
+        }
+        setSendOtpButton({
+          label: `Resend OTP in ${state.resendRemaining}s`,
+          disabled: true,
+          loading: false,
+        });
+      }, 1000);
+    }
+
+    function resetOtpFlow() {
+      if (state.isSendingOtp) return;
+      stopResendCooldown();
+      state.otpSent = false;
+      stepOtp.hidden = true;
+      stepPassword.hidden = true;
+      otpInput.value = "";
+      passwordInput.value = "";
+      setSendOtpButton({ label: "Send OTP", disabled: false, loading: false });
     }
 
     $("login-flow-form").addEventListener("submit", (event) => {
@@ -132,21 +192,41 @@
       return data;
     }
 
-    $("btn-send-otp").addEventListener("click", async () => {
+    emailInput.addEventListener("input", resetOtpFlow);
+    roleSelect.addEventListener("change", resetOtpFlow);
+
+    sendOtpButton.addEventListener("click", async () => {
+      if (state.isSendingOtp || state.resendRemaining > 0) return;
+
       state.email = emailInput.value.trim();
       state.role = roleSelect.value;
+      state.isSendingOtp = true;
+      stopResendCooldown();
+      setSendOtpButton({ label: "Sending OTP...", disabled: true, loading: true });
+      showMessage("Please wait, sending OTP to your email...");
+
       try {
         const data = await post("/api/auth/send-otp", {
           email: state.email,
           role: state.role,
         });
+        state.otpSent = true;
         stepOtp.hidden = false;
         stepPassword.hidden = true;
+        otpInput.value = "";
         passwordInput.value = "";
         otpInput.focus();
-        showMessage(data.message || "OTP sent.");
+        showMessage("OTP sent successfully. Please check your email.");
+        startResendCooldown(30);
       } catch (error) {
-        showError(error.message);
+        stopResendCooldown();
+        setSendOtpButton({ label: state.otpSent ? "Resend OTP" : "Send OTP", disabled: false, loading: false });
+        const message = error.message === BACKEND_CONNECTION_MESSAGE
+          ? BACKEND_CONNECTION_MESSAGE
+          : "Unable to send OTP. Please check your email or try again.";
+        showError(message);
+      } finally {
+        state.isSendingOtp = false;
       }
     });
 

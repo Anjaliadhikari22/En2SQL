@@ -130,6 +130,12 @@ User mode allows SQL generation and explanation only. Schema, history, and execu
 
 Admin-only backend APIs are protected with role checks. A user manually calling `/api/schema`, `/api/history`, or `/api/execute` receives `403 Access denied`.
 
+Schema privacy note:
+
+```text
+User role never receives raw schema, table, column, required-table, or exact row-count metadata. Unsupported requests are shown as friendly guidance. Admin role can view schema details, affected tables, affected columns, history, and execution results.
+```
+
 ## API endpoints
 
 Authentication:
@@ -177,6 +183,48 @@ LLM_PROVIDER=rule_based
 ```
 
 This uses the local rule-based backend only.
+
+## Why En2SQL uses local schema packs instead of external APIs
+
+En2SQL is local-first. It does not rely on external APIs for schema discovery or query generation. Common database domains are provided as local schema packs, making the project reliable, private, and suitable for offline/local demos.
+
+## Supported schema packs
+
+- HR
+- E-Commerce
+- University
+- Healthcare
+- Library
+- Banking
+- Hotel/Booking
+
+En2SQL automatically detects the relevant schema/domain from the user’s prompt. Users do not need to select a schema manually. If the connected database does not contain the required tables, En2SQL safely refuses to generate fake SQL and suggests contacting the admin.
+
+Schema pack SQL files are stored in:
+
+```text
+dataset/schema_packs/
+```
+
+## Adding a new schema pack
+
+1. Create SQL schema file.
+2. Add sample data.
+3. Register schema metadata in `backend/schema_reader.py`.
+4. Add domain keywords in `backend/prompt_processor.py` or the schema-pack registry.
+5. Add SQL templates in `backend/query_generator.py`.
+6. Add accuracy rules in `backend/query_accuracy_guard.py`.
+7. Add tests.
+
+## SQL Operation Safety Policy
+
+- Users can generate read-only SELECT queries only.
+- Admins can execute SELECT queries.
+- Admins can perform INSERT, UPDATE, and DELETE only after confirmation.
+- UPDATE and DELETE must include a WHERE condition.
+- DROP, ALTER, TRUNCATE, GRANT, REVOKE, and CREATE USER are blocked for everyone.
+- CREATE TABLE is not allowed from the normal workspace. New schemas should be added through approved schema pack SQL files.
+- Schema/domain detection happens internally. Users do not manually select schemas.
 
 ## Llama / local LLM optional support
 

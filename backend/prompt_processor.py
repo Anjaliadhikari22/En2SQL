@@ -85,6 +85,23 @@ DANGEROUS_SQL_RE = re.compile(
     re.IGNORECASE,
 )
 
+SCHEMA_OPERATION_RE = re.compile(
+    r"\b("
+    r"drop\s+(?:table|database)?|"
+    r"alter\s+table|"
+    r"truncate\s+(?:table)?|"
+    r"grant\s+|"
+    r"revoke\s+|"
+    r"create\s+user"
+    r")\b",
+    re.IGNORECASE,
+)
+
+CREATE_TABLE_RE = re.compile(
+    r"\bcreate\s+(?:a\s+)?table\b|\bcreate\s+table\s+\w+\b",
+    re.IGNORECASE,
+)
+
 
 def normalize_prompt(prompt: str) -> str:
     """
@@ -178,6 +195,16 @@ def is_invalid_prompt(text: str) -> bool:
 def is_unsafe_request(text: str) -> bool:
     """Return True for dangerous SQL/object-modification requests."""
     return bool(DANGEROUS_SQL_RE.search(text or ""))
+
+
+def is_unsafe_schema_operation(text: str) -> bool:
+    """Return True for schema/permission operations blocked for everyone."""
+    return bool(SCHEMA_OPERATION_RE.search(text or ""))
+
+
+def is_schema_creation_request(text: str) -> bool:
+    """Return True when the prompt asks to create a table/schema."""
+    return bool(CREATE_TABLE_RE.search(text or ""))
 
 
 def needs_unsupported_schema(text: str) -> bool:
@@ -543,6 +570,7 @@ def process_prompt(
     """Convert natural language into a structured intent object."""
     cleaned_text = normalize_prompt(text)
     normalized = normalize_text(text)
+    schema_pack = (schema or {}).get("schema_pack", "hr")
 
     if is_invalid_prompt(text):
         return {
@@ -560,6 +588,45 @@ def process_prompt(
             "limit": None,
             "join_type": None,
             "invalid_prompt": True,
+            "schema_pack": schema_pack,
+        }
+
+    if is_schema_creation_request(text):
+        return {
+            "original_text": text,
+            "normalized_text": normalized,
+            "action": "SCHEMA_CREATION_GUIDANCE",
+            "query_type": "SCHEMA_CREATION_GUIDANCE",
+            "tables": [],
+            "columns": [],
+            "aggregates": [],
+            "conditions": [],
+            "set_values": [],
+            "transfer": {},
+            "order_by": None,
+            "limit": None,
+            "join_type": None,
+            "schema_creation_guidance": True,
+            "schema_pack": schema_pack,
+        }
+
+    if is_unsafe_schema_operation(text):
+        return {
+            "original_text": text,
+            "normalized_text": normalized,
+            "action": "UNSAFE_SCHEMA_OPERATION",
+            "query_type": "UNSAFE_SCHEMA_OPERATION",
+            "tables": [],
+            "columns": [],
+            "aggregates": [],
+            "conditions": [],
+            "set_values": [],
+            "transfer": {},
+            "order_by": None,
+            "limit": None,
+            "join_type": None,
+            "unsafe_schema_operation": True,
+            "schema_pack": schema_pack,
         }
 
     if is_unsafe_request(text):
@@ -578,6 +645,7 @@ def process_prompt(
             "limit": None,
             "join_type": None,
             "unsafe_request": True,
+            "schema_pack": schema_pack,
         }
 
     if detect_multiple_prompts(text):
@@ -596,9 +664,10 @@ def process_prompt(
             "limit": None,
             "join_type": None,
             "multiple_prompts_detected": True,
+            "schema_pack": schema_pack,
         }
 
-    if needs_unsupported_schema(cleaned_text):
+    if schema_pack == "hr" and needs_unsupported_schema(cleaned_text):
         return {
             "original_text": text,
             "normalized_text": normalized,
@@ -614,6 +683,7 @@ def process_prompt(
             "limit": None,
             "join_type": None,
             "unsupported_schema": True,
+            "schema_pack": schema_pack,
         }
 
     all_columns: list[str] = []
@@ -643,6 +713,7 @@ def process_prompt(
         "grouped_ranking": None,
         "dialect_feature": None,
         "multi_query_type": None,
+        "schema_pack": schema_pack,
     }
 
     grouped_ranking = detect_grouped_ranking(cleaned_text)

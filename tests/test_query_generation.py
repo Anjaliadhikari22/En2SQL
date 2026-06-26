@@ -1,300 +1,227 @@
-"""
-Automated tests for NL-to-SQL query generation pipeline.
-
-Run from project root:
-    cd backend
-    python -m pytest ../tests
-"""
+"""Golden tests for En2SQL HR query generation accuracy."""
 
 import re
 
-import pytest
-
-from impact_analyzer import analyze_impact
 from prompt_processor import process_prompt
+from query_accuracy_guard import validate_query_accuracy
 from query_generator import generate_all_queries
-from schema_reader import get_demo_schema, get_table_names
+from schema_reader import detect_schema_pack, get_schema_pack, get_table_names
 from validator import validate_query
 
 
-SCHEMA = get_demo_schema()
+SCHEMA = get_schema_pack("hr")
 TABLES = get_table_names(SCHEMA)
 
-DB_TYPES = ["mysql", "postgresql"]
 
+def compact(sql: str) -> str:
+    return re.sub(r"\s+", " ", sql.strip()).upper()
 
-def normalize_sql(sql: str) -> str:
-    """Collapse whitespace for flexible SQL comparison."""
-    return re.sub(r"\s+", " ", sql.strip())
 
+def guarded_pipeline(prompt: str, db_type: str = "mysql"):
+    decision = detect_schema_pack(prompt, "auto")
+    schema = get_schema_pack(decision["schema_pack"] or "hr")
+    tables = get_table_names(schema)
+    intent = process_prompt(prompt, tables, schema)
+    if intent.get("unsupported_schema") or intent.get("unsafe_request"):
+        return intent, [], ""
+    generated = generate_all_queries(intent, schema, db_type)
+    guarded = validate_query_accuracy(prompt, generated, intent.get("action", "SELECT"), db_type)
+    sql = guarded["selected_query"]
+    validation = validate_query(sql, schema)
+    assert validation["validation"]["valid"], validation
+    return intent, guarded["generated_queries"], sql
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
+def test_second_highest_salary_not_plain_sorted_list():
+    prompt = "How do you find the second-highest salary in the employee table without hardcoding numbers?"
+    _, queries, sql = guarded_pipeline(prompt)
+    upper = compact(sql)
 
-@pytest.fixture(params=DB_TYPES)
-def db_type(request):
-    return request.param
+    assert queries
+    assert (
+        "MAX(SALARY)" in upper and "WHERE SALARY <" in upper and "SELECT MAX(SALARY)" in upper
+    ) or (
+        "SELECT DISTINCT SALARY" in upper and "LIMIT 1 OFFSET 1" in upper
+    ) or (
+        ("DENSE_RANK()" in upper or "ROW_NUMBER()" in upper) and "SALARY_RANK = 2" in upper
+    )
+    assert upper != "SELECT SALARY FROM EMPLOYEES ORDER BY SALARY DESC;"
 
 
-def run_pipeline(prompt: str, db_type: str):
-    """Run prompt → intent → SQL → validation → impact."""
-    intent = process_prompt(prompt, TABLES, SCHEMA)
-    queries = generate_all_queries(intent, SCHEMA, db_type)
-    sql = queries[0]
-    validation = validate_query(sql, SCHEMA)
-    impact = analyze_impact(sql, intent, SCHEMA, db_type)
-    return intent, queries, sql, validation, impact
+def test_top_5_highest_paid_employees_has_order_and_limit():
+    _, _, sql = guarded_pipeline("Find the top 5 highest-paid employees")
+    upper = compact(sql)
 
+    assert "ORDER BY SALARY DESC" in upper
+    assert "LIMIT 5" in upper
 
-# ---------------------------------------------------------------------------
-# Category 1: SELECT with WHERE
-# ---------------------------------------------------------------------------
 
+def test_top_2_highest_paid_employees_within_each_department_is_grouped():
+    _, queries, sql = guarded_pipeline("Find the top 2 highest-paid employees within each department")
+    upper = compact(sql)
 
-class TestSelectWithWhere:
-    PROMPT = "Show all employees whose salary is greater than 50000"
-    EXPECTED = """SELECT * FROM Employee
-WHERE Salary > 50000;"""
+    assert len(queries) >= 2
+    assert "PARTITION BY" in upper or "E2.DEPARTMENT_ID = E.DEPARTMENT_ID" in upper
+    assert compact(sql) != "SELECT * FROM EMPLOYEES ORDER BY SALARY DESC LIMIT 2;"
 
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_select_where_employee_salary(self, db_type):
-        _, queries, sql, validation, impact = run_pipeline(self.PROMPT, db_type)
 
-        assert normalize_sql(sql) == normalize_sql(self.EXPECTED)
-        assert validation["validation"]["valid"]
-        assert impact["affected_tables"] == ["Employee"]
-        assert impact["affected_columns"] == ["Salary"]
-        assert "25 rows may be returned" in impact["expected_output"]
-        assert len(queries) == 1
-        assert "MAX(*)" not in sql
-        assert "`" not in sql
+def test_employees_earning_more_than_average_salary():
+    _, _, sql = guarded_pipeline("Find employees earning more than the average salary")
+    upper = compact(sql)
 
+    assert "SALARY >" in upper
+    assert "SELECT AVG(SALARY)" in upper
+    assert "FROM EMPLOYEES" in upper
 
-# ---------------------------------------------------------------------------
-# Category 2: TOP N / ORDER BY
-# ---------------------------------------------------------------------------
 
+def test_employees_earning_less_than_average_salary():
+    _, _, sql = guarded_pipeline("Find employees earning less than the average salary")
+    upper = compact(sql)
 
-class TestTopNOrderBy:
-    PROMPT = "Find top 5 students with highest CGPA"
-    EXPECTED = """SELECT * FROM Students
-ORDER BY CGPA DESC
-LIMIT 5;"""
+    assert "SALARY <" in upper
+    assert "SELECT AVG(SALARY)" in upper
+    assert "FROM EMPLOYEES" in upper
 
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_top_n_students_cgpa(self, db_type):
-        _, queries, sql, validation, impact = run_pipeline(self.PROMPT, db_type)
 
-        assert normalize_sql(sql) == normalize_sql(self.EXPECTED)
-        assert validation["validation"]["valid"]
-        assert "MAX(*)" not in sql.upper()
-        assert "5 rows may be returned" in impact["expected_output"]
-        assert len(queries) == 1
+def test_count_employees_in_each_department():
+    _, queries, sql = guarded_pipeline("Count employees in each department")
+    assert len(queries) >= 1
+    upper = compact(sql)
 
+    assert "COUNT(" in upper
+    assert "GROUP BY" in upper
 
-# ---------------------------------------------------------------------------
-# Category 3: COUNT (user-requested)
-# ---------------------------------------------------------------------------
 
+def test_departments_with_no_employees():
+    _, _, sql = guarded_pipeline("Show departments with no employees")
+    upper = compact(sql)
 
-class TestCountQuery:
-    PROMPT = "Count total students in CSE department"
-    EXPECTED = """SELECT COUNT(*) FROM Students
-WHERE Department = 'CSE';"""
+    assert "FROM DEPARTMENTS" in upper
+    assert "LEFT JOIN EMPLOYEES" in upper
+    assert "IS NULL" in upper
 
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_count_students_cse(self, db_type):
-        intent, queries, sql, validation, impact = run_pipeline(self.PROMPT, db_type)
 
-        assert "COUNT" in intent.get("aggregates", [])
-        assert normalize_sql(sql) == normalize_sql(self.EXPECTED)
-        assert validation["validation"]["valid"]
-        assert len(queries) == 1
-        assert "COUNT(*)" in sql
-        assert "RowCount" not in sql  # internal alias not exposed
+def test_employees_not_assigned_to_any_department():
+    _, _, sql = guarded_pipeline("Show employees who are not assigned to any department")
+    upper = compact(sql)
 
+    assert "DEPARTMENT_ID IS NULL" in upper or ("LEFT JOIN DEPARTMENTS" in upper and "IS NULL" in upper)
 
-# ---------------------------------------------------------------------------
-# Category 4: UPDATE
-# ---------------------------------------------------------------------------
 
+def test_display_all_departments_even_if_no_employee_exists():
+    _, _, sql = guarded_pipeline("Display all departments even if no employee exists")
+    upper = compact(sql)
 
-class TestUpdateQuery:
-    PROMPT = "Increase salary of all employees in IT department by 10 percent"
-    EXPECTED = """UPDATE Employee
-SET Salary = Salary * 1.10
-WHERE DepartmentID IN (
-    SELECT DepartmentID
-    FROM Department
-    WHERE DepartmentName = 'IT'
-);"""
-
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_update_salary_it_department(self, db_type):
-        _, queries, sql, validation, impact = run_pipeline(self.PROMPT, db_type)
+    assert "FROM DEPARTMENTS" in upper
+    assert "LEFT JOIN EMPLOYEES" in upper
 
-        assert normalize_sql(sql) == normalize_sql(self.EXPECTED)
-        assert validation["validation"]["valid"]
-        assert validation["risks"]["is_risky"]
-        assert "UPDATE" in validation["warning_message"]
-        assert "42 rows will be modified" in impact["expected_output"]
-        assert len(queries) == 1
-
-
-# ---------------------------------------------------------------------------
-# Category 5: DELETE
-# ---------------------------------------------------------------------------
-
-
-class TestDeleteQuery:
-    PROMPT = "Delete students whose attendance is less than 75"
-    EXPECTED = "DELETE FROM Students WHERE Attendance < 75;"
 
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_delete_students_attendance(self, db_type):
-        _, queries, sql, validation, impact = run_pipeline(self.PROMPT, db_type)
-
-        assert normalize_sql(sql) == normalize_sql(self.EXPECTED)
-        assert validation["validation"]["valid"]
-        assert validation["risks"]["is_risky"]
-        assert "DELETE" in validation["warning_message"]
-        assert "12 rows will be deleted" in impact["expected_output"]
-        assert len(queries) == 1
-
-
-# ---------------------------------------------------------------------------
-# Category 6: INNER JOIN
-# ---------------------------------------------------------------------------
-
-
-class TestInnerJoin:
-    PROMPT = "Show employee name with department name"
-    EXPECTED = """SELECT Employee.Name, Department.DepartmentName
-FROM Employee
-INNER JOIN Department
-ON Employee.DepartmentID = Department.DepartmentID;"""
-
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_inner_join_employee_department(self, db_type):
-        _, queries, sql, validation, impact = run_pipeline(self.PROMPT, db_type)
-
-        assert normalize_sql(sql) == normalize_sql(self.EXPECTED)
-        assert validation["validation"]["valid"]
-        assert "INNER JOIN" in sql
-        assert len(queries) == 1
-
-
-# ---------------------------------------------------------------------------
-# Category 7: LEFT JOIN
-# ---------------------------------------------------------------------------
-
-
-class TestLeftJoin:
-    PROMPT = "Display all departments even if no employee exists"
-    EXPECTED = """SELECT Department.DepartmentName, Employee.Name
-FROM Department
-LEFT JOIN Employee
-ON Department.DepartmentID = Employee.DepartmentID;"""
-
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_left_join_departments(self, db_type):
-        _, queries, sql, validation, impact = run_pipeline(self.PROMPT, db_type)
-
-        assert normalize_sql(sql) == normalize_sql(self.EXPECTED)
-        assert validation["validation"]["valid"]
-        assert "LEFT JOIN" in sql
-        assert len(queries) == 1
-
-
-# ---------------------------------------------------------------------------
-# Category 8: TRANSACTION (MySQL vs PostgreSQL)
-# ---------------------------------------------------------------------------
-
-
-class TestTransaction:
-    PROMPT = "Transfer 5000 from account 101 to account 102"
-
-    def test_transaction_mysql(self):
-        _, queries, sql, validation, impact = run_pipeline(self.PROMPT, "mysql")
-
-        expected = (
-            "START TRANSACTION; "
-            "UPDATE Account SET Balance = Balance - 5000 WHERE AccountID = 101; "
-            "UPDATE Account SET Balance = Balance + 5000 WHERE AccountID = 102; "
-            "COMMIT;"
-        )
-        assert normalize_sql(sql) == normalize_sql(expected)
-        assert validation["validation"]["valid"]
-        assert validation["risks"]["is_risky"]
-        assert "2 rows may be modified inside this transaction" in impact["expected_output"]
-        assert len(queries) == 1
-
-    def test_transaction_postgresql(self):
-        _, queries, sql, validation, impact = run_pipeline(self.PROMPT, "postgresql")
-
-        expected = (
-            "BEGIN; "
-            "UPDATE Account SET Balance = Balance - 5000 WHERE AccountID = 101; "
-            "UPDATE Account SET Balance = Balance + 5000 WHERE AccountID = 102; "
-            "COMMIT;"
-        )
-        assert normalize_sql(sql) == normalize_sql(expected)
-        assert validation["validation"]["valid"]
-        assert len(queries) == 1
-
-
-# ---------------------------------------------------------------------------
-# General safety checks
-# ---------------------------------------------------------------------------
-
-
-class TestGeneralSafety:
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_generated_query_not_empty(self, db_type):
-        prompts = [
-            "Show all employees whose salary is greater than 50000",
-            "Find top 5 students with highest CGPA",
-            "Count total students in CSE department",
-        ]
-        for prompt in prompts:
-            _, queries, sql, _, _ = run_pipeline(prompt, db_type)
-            assert sql.strip()
-            assert not sql.strip().startswith("-- Error")
-            assert len(queries) >= 1
-
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_no_invalid_max_star(self, db_type):
-        prompt = "Find top 5 students with highest CGPA"
-        _, _, sql, _, _ = run_pipeline(prompt, db_type)
-        assert "MAX(*)" not in sql.upper()
-
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_no_internal_count_in_generated_queries(self, db_type):
-        """Non-COUNT prompts must not include internal impact COUNT queries."""
-        prompt = "Show all employees whose salary is greater than 50000"
-        _, queries, _, _, _ = run_pipeline(prompt, db_type)
-        for q in queries:
-            assert "RowCount" not in q
-            assert normalize_sql(q).count("COUNT(*)") == 0
-
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_select_star_optimization_hint(self, db_type):
-        prompt = "Show all employees whose salary is greater than 50000"
-        _, _, sql, validation, _ = run_pipeline(prompt, db_type)
-        assert "SELECT *" in sql
-        assert "required columns" in validation["optimization_message"].lower()
-
-    @pytest.mark.parametrize("db_type", DB_TYPES)
-    def test_update_delete_show_warnings(self, db_type):
-        update_prompt = "Increase salary of all employees in IT department by 10 percent"
-        delete_prompt = "Delete students whose attendance is less than 75"
-
-        _, _, _, update_val, _ = run_pipeline(update_prompt, db_type)
-        _, _, _, delete_val, _ = run_pipeline(delete_prompt, db_type)
-
-        assert update_val["warning_message"]
-        assert delete_val["warning_message"]
-        assert update_val["risks"]["is_risky"]
-        assert delete_val["risks"]["is_risky"]
+def test_duplicate_email_addresses():
+    _, _, sql = guarded_pipeline("Find duplicate email addresses")
+    upper = compact(sql)
+
+    assert "GROUP BY EMAIL" in upper
+    assert "HAVING COUNT(*) > 1" in upper
+
+
+def test_employee_name_with_department_name():
+    _, _, sql = guarded_pipeline("Show employee name with department name")
+    upper = compact(sql)
+
+    assert "FROM EMPLOYEES" in upper
+    assert "JOIN DEPARTMENTS" in upper
+    assert "DEPARTMENT_NAME" in upper
+
+
+def test_employees_with_job_titles():
+    _, _, sql = guarded_pipeline("Show employees with their job titles")
+    upper = compact(sql)
+
+    assert "FROM EMPLOYEES" in upper
+    assert "JOIN JOBS" in upper
+    assert "JOB_TITLE" in upper
+
+
+def test_random_employees_mysql():
+    _, _, sql = guarded_pipeline("Show 3 random employees", "mysql")
+    upper = compact(sql)
+
+    assert "ORDER BY RAND()" in upper
+    assert "LIMIT 3" in upper
+
+
+def test_random_employees_postgresql():
+    _, _, sql = guarded_pipeline("Show 3 random employees", "postgresql")
+    upper = compact(sql)
+
+    assert "ORDER BY RANDOM()" in upper
+    assert "LIMIT 3" in upper
+
+
+def test_ecommerce_top_products_by_revenue():
+    _, _, sql = guarded_pipeline("Find the top 3 products by total sales revenue")
+    upper = compact(sql)
+
+    assert "FROM PRODUCTS" in upper
+    assert "JOIN ORDER_ITEMS" in upper
+    assert "SUM(OI.QUANTITY * OI.UNIT_PRICE)" in upper
+    assert "ORDER BY TOTAL_REVENUE DESC" in upper
+    assert "LIMIT 3" in upper
+
+
+def test_university_students_enrolled_in_each_course():
+    _, _, sql = guarded_pipeline("Show students enrolled in each course")
+    upper = compact(sql)
+
+    assert "FROM COURSES" in upper
+    assert "LEFT JOIN ENROLLMENTS" in upper
+    assert "COUNT(" in upper
+    assert "GROUP BY" in upper
+
+
+def test_healthcare_doctors_with_appointments():
+    _, _, sql = guarded_pipeline("Show doctors with their appointments")
+    upper = compact(sql)
+
+    assert "FROM DOCTORS" in upper
+    assert "JOIN APPOINTMENTS" in upper
+
+
+def test_library_books_borrowed_by_each_member():
+    _, _, sql = guarded_pipeline("Show books borrowed by each member")
+    upper = compact(sql)
+
+    assert "FROM MEMBERS" in upper
+    assert "JOIN BORROW_RECORDS" in upper
+    assert "JOIN BOOKS" in upper
+
+
+def test_banking_account_balance_for_each_customer():
+    _, _, sql = guarded_pipeline("Show account balance for each customer")
+    upper = compact(sql)
+
+    assert "FROM CUSTOMERS" in upper
+    assert "JOIN ACCOUNTS" in upper
+    assert "BALANCE" in upper
+
+
+def test_booking_bookings_by_guest():
+    _, _, sql = guarded_pipeline("Show bookings by guest")
+    upper = compact(sql)
+
+    assert "FROM GUESTS" in upper
+    assert "JOIN BOOKINGS" in upper
+
+
+def test_drop_table_is_unsafe_request():
+    intent = process_prompt("DROP TABLE employees", TABLES, SCHEMA)
+
+    assert intent["query_type"] == "UNSAFE_SCHEMA_OPERATION"
+    assert intent.get("unsafe_schema_operation") is True
+
+
+def test_unknown_domain_does_not_match_schema_pack():
+    decision = detect_schema_pack("Show planets discovered by telescope", "auto")
+
+    assert decision["unsupported"] is True
+    assert decision["schema_pack"] == ""

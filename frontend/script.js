@@ -13,6 +13,9 @@ const SAMPLE_PROMPTS = [
   "Find the top 5 highest-paid employees",
   "Show employee name with department name",
   "Find the top 2 highest-paid employees within each department",
+  "Find top 3 products by total sales revenue",
+  "Show students enrolled in each course",
+  "Show doctors with their appointments",
   "Show 3 random employees",
   "Count employees in each department",
 ];
@@ -102,6 +105,7 @@ const sampleButtonsContainer = $("sample-buttons");
 
 const confirmModal = $("confirm-modal");
 const confirmBackdrop = confirmModal.querySelector(".modal__backdrop");
+const confirmTitle = $("confirm-title");
 const confirmMessage = $("confirm-message");
 const confirmOk = $("confirm-ok");
 const confirmCancel = $("confirm-cancel");
@@ -234,6 +238,7 @@ function restoreState() {
     if (appState.currentResponse && (
       appState.selectedQuery ||
       appState.queryType === "UNSUPPORTED_SCHEMA" ||
+      appState.queryType === "UNSUPPORTED_DOMAIN" ||
       appState.queryType === "MULTIPLE_PROMPTS_DETECTED" ||
       appState.queryType === "INVALID_PROMPT" ||
       appState.queryType === "UNSAFE_REQUEST"
@@ -398,8 +403,9 @@ function initDrawers() {
 // Modal
 // ---------------------------------------------------------------------------
 
-function showConfirmModal(message) {
+function showConfirmModal(message, title = "Confirm Data Modification") {
   return new Promise((resolve) => {
+    confirmTitle.textContent = title;
     confirmMessage.textContent = message;
     confirmModal.hidden = false;
 
@@ -516,9 +522,15 @@ function renderUnsupportedSchema(data) {
 
   unsupportedCard.hidden = false;
   unsupportedCard.classList.remove("multiple-prompts-card");
-  unsupportedCard.querySelector("h3").textContent = "Unsupported schema";
+  unsupportedCard.querySelector("h3").textContent = "Unsupported request";
   unsupportedCard.querySelector(".unsupported-card__eyebrow").textContent =
     "No SQL query was generated to avoid incorrect output.";
+  unsupportedCard.querySelector(".unsupported-card__label").textContent = isAdmin()
+    ? "Available HR schema"
+    : "Suggestion";
+  unsupportedCard.querySelector(".unsupported-schema-list").innerHTML = isAdmin()
+    ? "<span>employees</span><span>departments</span><span>jobs</span><span>locations</span><span>countries</span><span>regions</span><span>dependents</span>"
+    : "<span>Please contact the admin if this type of data needs to be added.</span>";
   sqlBlock.hidden = true;
   queryOptionsCard.hidden = true;
   detailsTabs.hidden = true;
@@ -528,11 +540,57 @@ function renderUnsupportedSchema(data) {
   demoModeNote.hidden = true;
 
   unsupportedMessage.textContent =
-    explanationMessage || "This prompt requires tables that are not available in the current schema.";
+    isAdmin()
+      ? (explanationMessage || "This prompt requires tables that are not available in the current schema.")
+      : "This request needs data that is not available in the current connected database.";
   unsupportedWarning.textContent =
     data.warning || "The system avoided generating an incorrect hallucinated query.";
   unsupportedOptimization.textContent =
-    data.optimization_suggestion || "Add the required schema or use one of the available demo tables.";
+    isAdmin()
+      ? (data.optimization_suggestion || "Add the required schema or use one of the available demo tables.")
+      : "Contact the admin to add or connect the required database.";
+  applyRoleAccess();
+}
+
+function renderUnsupportedDomain(data) {
+  appState.selectedQuery = "";
+  outputSql.textContent = "";
+  queryOptionsContainer.innerHTML = "";
+
+  unsupportedCard.hidden = false;
+  unsupportedCard.classList.remove("multiple-prompts-card");
+  unsupportedCard.querySelector("h3").textContent = "Unsupported request";
+  unsupportedCard.querySelector(".unsupported-card__eyebrow").textContent =
+    "No SQL query was generated to avoid incorrect output.";
+  unsupportedCard.querySelector(".unsupported-card__label").textContent = isAdmin()
+    ? "Supported internal domains"
+    : "Suggestion";
+  unsupportedCard.querySelector(".unsupported-schema-list").innerHTML = isAdmin()
+    ? "<span>HR</span><span>E-Commerce</span><span>University</span><span>Healthcare</span><span>Library</span><span>Banking</span><span>Hotel/Booking</span>"
+    : "<span>Please ask the admin to connect or add a matching database.</span>";
+  sqlBlock.hidden = true;
+  queryOptionsCard.hidden = true;
+  detailsTabs.hidden = false;
+  btnCopySql.hidden = true;
+  btnExecute.disabled = true;
+  executeSection.hidden = true;
+  demoModeNote.hidden = true;
+
+  unsupportedMessage.textContent =
+    "This request needs tables that are not available in the current connected database.";
+  unsupportedWarning.textContent = data.warning || "Unsupported domain.";
+  unsupportedOptimization.textContent =
+    data.suggestion || data.optimization_suggestion || "Please ask the admin to connect or add a matching database for this type of query.";
+
+  activateExplanationTab();
+  renderExplanation(data.explanation || []);
+  if (isAdmin()) {
+    renderTagList(outputTables, data.affected_tables);
+    renderTagList(outputColumns, data.affected_columns);
+  }
+  outputImpact.textContent = data.expected_output || "No SQL query was generated.";
+  outputOptimization.textContent = data.optimization_suggestion || "Please ask the admin to connect or add a matching database.";
+  outputWarning.textContent = data.warning || "Unsupported domain.";
   applyRoleAccess();
 }
 
@@ -562,8 +620,10 @@ function renderMultiplePromptsWarning(data) {
 
   activateExplanationTab();
   renderExplanation(data.explanation || []);
-  renderTagList(outputTables, data.affected_tables);
-  renderTagList(outputColumns, data.affected_columns);
+  if (isAdmin()) {
+    renderTagList(outputTables, data.affected_tables);
+    renderTagList(outputColumns, data.affected_columns);
+  }
   outputImpact.textContent = data.expected_output || "No SQL query was generated because multiple prompts were entered together.";
   outputOptimization.textContent = data.optimization_suggestion || "Split your input into separate prompts and generate them one by one.";
   outputWarning.textContent = data.warning || "Multiple prompts detected.";
@@ -596,8 +656,10 @@ function renderNoSqlWarning(data, options = {}) {
 
   activateExplanationTab();
   renderExplanation(data.explanation || []);
-  renderTagList(outputTables, data.affected_tables);
-  renderTagList(outputColumns, data.affected_columns);
+  if (isAdmin()) {
+    renderTagList(outputTables, data.affected_tables);
+    renderTagList(outputColumns, data.affected_columns);
+  }
   outputImpact.textContent = data.expected_output || "No SQL query was generated.";
   outputOptimization.textContent =
     data.optimization_suggestion || options.optimization || "Try entering one clear SQL request in English.";
@@ -638,6 +700,44 @@ function displayResults(data) {
       warning: "Unsafe request detected.",
       optimization: "Use a safe read-only request or a clearly supported update/delete request.",
     });
+    return;
+  }
+
+  if (queryType === "ACCESS_DENIED_OPERATION") {
+    renderNoSqlWarning(data, {
+      title: "Operation restricted",
+      eyebrow: "No SQL query was generated.",
+      message: "User accounts are allowed to generate read-only SELECT queries only.",
+      warning: "Access denied.",
+      optimization: "Please contact the admin for modification operations.",
+    });
+    return;
+  }
+
+  if (queryType === "UNSAFE_SCHEMA_OPERATION") {
+    renderNoSqlWarning(data, {
+      title: "Unsafe schema operation blocked",
+      eyebrow: "No SQL query was generated for safety.",
+      message: "This request attempts to change or remove database structure.",
+      warning: "Blocked unsafe schema operation.",
+      optimization: "Schema-level changes should be performed manually by an authorized database administrator.",
+    });
+    return;
+  }
+
+  if (queryType === "SCHEMA_CREATION_GUIDANCE") {
+    renderNoSqlWarning(data, {
+      title: "Schema creation guidance",
+      eyebrow: "No executable SQL was generated.",
+      message: "Schema creation is not available from the normal Text-to-SQL workspace.",
+      warning: "Schema creation is blocked from this workspace.",
+      optimization: data.suggestion || "Create a schema pack SQL file and import it manually.",
+    });
+    return;
+  }
+
+  if (queryType === "UNSUPPORTED_DOMAIN") {
+    renderUnsupportedDomain(data);
     return;
   }
 
@@ -697,8 +797,10 @@ function displayResults(data) {
   }
 
   renderExplanation(data.explanation || "—");
-  renderTagList(outputTables, data.affected_tables);
-  renderTagList(outputColumns, data.affected_columns);
+  if (isAdmin()) {
+    renderTagList(outputTables, data.affected_tables);
+    renderTagList(outputColumns, data.affected_columns);
+  }
   outputImpact.textContent = data.expected_output || "—";
   outputOptimization.textContent = data.optimization_suggestion || "—";
   outputWarning.textContent = warningText || "No warnings for this query.";
@@ -837,7 +939,10 @@ async function handleGenerate(event) {
   persistState();
   setGenerateLoading(true);
   try {
-    const data = await apiPost("/api/generate", { prompt, database_type: appState.databaseType });
+    const data = await apiPost("/api/generate", {
+      prompt,
+      database_type: appState.databaseType,
+    });
     console.log("API response received", data);
 
     const queries = userFacingQueries(data.generated_queries);
@@ -863,20 +968,19 @@ async function handleExecute() {
   if (!query) { showToast("No query selected.", "error"); return; }
 
   const queryType = appState.queryType || "SELECT";
+  let confirmed = false;
   if (DESTRUCTIVE_TYPES.has(queryType)) {
-    const msg = [
-      `This ${queryType} query may modify or delete data.`,
-      appState.currentResponse?.warning || "",
-      "Do you want to proceed?",
-    ].filter(Boolean).join("\n\n");
+    const msg = queryType === "DELETE"
+      ? "This query may permanently remove records from the database. Continue only if you understand the impact."
+      : "This query may change database records. Continue only if you understand the impact.";
 
-    const confirmed = await showConfirmModal(msg);
+    confirmed = await showConfirmModal(msg, "Confirm Data Modification");
     if (!confirmed) return;
   }
 
   setGlobalLoading(true);
   try {
-    const data = await apiPost("/api/execute", { query, database_type: appState.databaseType });
+    const data = await apiPost("/api/execute", { query, database_type: appState.databaseType, confirmed });
     displayExecutionResult(data);
   } catch (err) {
     displayExecutionResult({ status: "error", columns: [], rows: [], message: err.message });

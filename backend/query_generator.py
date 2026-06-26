@@ -69,6 +69,10 @@ def _is_postgresql(db_type: str) -> bool:
     return (db_type or "mysql").lower() in ("postgres", "postgresql")
 
 
+def _nl(intent: dict[str, Any]) -> str:
+    return intent.get("normalized_text", "")
+
+
 def resolve_target_table(intent: dict[str, Any], schema: dict[str, Any]) -> Optional[str]:
     tables = intent.get("tables", [])
     action = intent.get("action", "SELECT")
@@ -185,6 +189,10 @@ def _select_clause(intent: dict[str, Any]) -> str:
 
 
 def build_select_query(intent: dict[str, Any], schema: dict[str, Any], db_type: str) -> str:
+    pack_queries = _schema_pack_queries(intent, schema, db_type)
+    if pack_queries:
+        return pack_queries[0]
+
     special = _build_hr_special_select(intent, db_type)
     if special:
         return special
@@ -298,6 +306,312 @@ def _build_random_employees_query(intent: dict[str, Any], db_type: str) -> str:
         f"ORDER BY {random_function}",
         f"LIMIT {limit};",
     ])
+
+
+def _schema_pack_queries(intent: dict[str, Any], schema: dict[str, Any], db_type: str) -> Optional[list[str]]:
+    """Generate local schema-pack queries for common supported domains."""
+    _ = db_type
+    pack = (schema.get("schema_pack") or intent.get("schema_pack") or "hr").lower()
+    text = _nl(intent)
+
+    if pack == "ecommerce":
+        top_match = re.search(r"\btop\s+(\d+)\b", text)
+        if top_match and "product" in text and ("sales" in text or "revenue" in text):
+            n = top_match.group(1)
+            return [(
+                "SELECT\n"
+                "    p.product_id,\n"
+                "    p.product_name,\n"
+                "    SUM(oi.quantity * oi.unit_price) AS total_revenue\n"
+                "FROM products p\n"
+                "JOIN order_items oi\n"
+                "ON p.product_id = oi.product_id\n"
+                "JOIN orders o\n"
+                "ON oi.order_id = o.order_id\n"
+                "GROUP BY p.product_id, p.product_name\n"
+                "ORDER BY total_revenue DESC\n"
+                f"LIMIT {n};"
+            )]
+        if "revenue" in text and "category" in text:
+            return [(
+                "SELECT\n"
+                "    c.category_name,\n"
+                "    SUM(oi.quantity * oi.unit_price) AS total_revenue\n"
+                "FROM categories c\n"
+                "JOIN products p\n"
+                "ON c.category_id = p.category_id\n"
+                "JOIN order_items oi\n"
+                "ON p.product_id = oi.product_id\n"
+                "GROUP BY c.category_name\n"
+                "ORDER BY total_revenue DESC;"
+            )]
+        if "customer" in text and re.search(r"\b(no orders|without orders)\b", text):
+            return [(
+                "SELECT\n"
+                "    c.customer_id,\n"
+                "    c.first_name,\n"
+                "    c.last_name,\n"
+                "    c.email\n"
+                "FROM customers c\n"
+                "LEFT JOIN orders o\n"
+                "ON c.customer_id = o.customer_id\n"
+                "WHERE o.order_id IS NULL;"
+            )]
+        if "monthly" in text and "revenue" in text:
+            year = (re.search(r"\b(20\d{2}|19\d{2})\b", text) or [None, "2025"])[1]
+            return [(
+                "SELECT\n"
+                "    EXTRACT(MONTH FROM o.order_date) AS revenue_month,\n"
+                "    SUM(oi.quantity * oi.unit_price) AS total_revenue\n"
+                "FROM orders o\n"
+                "JOIN order_items oi\n"
+                "ON o.order_id = oi.order_id\n"
+                f"WHERE EXTRACT(YEAR FROM o.order_date) = {year}\n"
+                "GROUP BY EXTRACT(MONTH FROM o.order_date)\n"
+                "ORDER BY revenue_month;"
+            )]
+
+    if pack == "university":
+        if "student" in text and "course" in text and ("enrolled" in text or "each course" in text):
+            return [(
+                "SELECT\n"
+                "    c.course_name,\n"
+                "    COUNT(e.student_id) AS student_count\n"
+                "FROM courses c\n"
+                "LEFT JOIN enrollments e\n"
+                "ON c.course_id = e.course_id\n"
+                "GROUP BY c.course_name\n"
+                "ORDER BY student_count DESC;"
+            )]
+        if "average" in text and ("marks" in text or "grade" in text) and "course" in text:
+            return [(
+                "SELECT\n"
+                "    c.course_name,\n"
+                "    AVG(g.marks) AS average_marks\n"
+                "FROM courses c\n"
+                "JOIN enrollments e\n"
+                "ON c.course_id = e.course_id\n"
+                "JOIN grades g\n"
+                "ON e.enrollment_id = g.enrollment_id\n"
+                "GROUP BY c.course_name\n"
+                "ORDER BY average_marks DESC;"
+            )]
+        if "student" in text and ("highest grade" in text or "highest grades" in text):
+            return [(
+                "SELECT\n"
+                "    s.student_id,\n"
+                "    s.first_name,\n"
+                "    s.last_name,\n"
+                "    g.marks\n"
+                "FROM students s\n"
+                "JOIN enrollments e\n"
+                "ON s.student_id = e.student_id\n"
+                "JOIN grades g\n"
+                "ON e.enrollment_id = g.enrollment_id\n"
+                "ORDER BY g.marks DESC\n"
+                "LIMIT 5;"
+            )]
+        if "instructor" in text and "course" in text:
+            return [(
+                "SELECT\n"
+                "    i.first_name,\n"
+                "    i.last_name,\n"
+                "    c.course_name\n"
+                "FROM instructors i\n"
+                "JOIN courses c\n"
+                "ON i.instructor_id = c.instructor_id;"
+            )]
+
+    if pack == "healthcare":
+        if "doctor" in text and "appointment" in text and "count" not in text:
+            return [(
+                "SELECT\n"
+                "    d.doctor_id,\n"
+                "    d.first_name,\n"
+                "    d.last_name,\n"
+                "    a.appointment_id,\n"
+                "    a.appointment_date,\n"
+                "    a.status\n"
+                "FROM doctors d\n"
+                "JOIN appointments a\n"
+                "ON d.doctor_id = a.doctor_id;"
+            )]
+        if "patient" in text and "prescription" in text:
+            return [(
+                "SELECT\n"
+                "    p.first_name,\n"
+                "    p.last_name,\n"
+                "    m.medicine_name,\n"
+                "    pr.dosage\n"
+                "FROM patients p\n"
+                "JOIN appointments a\n"
+                "ON p.patient_id = a.patient_id\n"
+                "JOIN prescriptions pr\n"
+                "ON a.appointment_id = pr.appointment_id\n"
+                "JOIN medicines m\n"
+                "ON pr.medicine_id = m.medicine_id;"
+            )]
+        if "count" in text and "appointment" in text and "doctor" in text:
+            return [(
+                "SELECT\n"
+                "    d.doctor_id,\n"
+                "    d.first_name,\n"
+                "    d.last_name,\n"
+                "    COUNT(a.appointment_id) AS appointment_count\n"
+                "FROM doctors d\n"
+                "LEFT JOIN appointments a\n"
+                "ON d.doctor_id = a.doctor_id\n"
+                "GROUP BY d.doctor_id, d.first_name, d.last_name\n"
+                "ORDER BY appointment_count DESC;"
+            )]
+        if "patient" in text and re.search(r"\b(no appointments|without appointments)\b", text):
+            return [(
+                "SELECT\n"
+                "    p.patient_id,\n"
+                "    p.first_name,\n"
+                "    p.last_name\n"
+                "FROM patients p\n"
+                "LEFT JOIN appointments a\n"
+                "ON p.patient_id = a.patient_id\n"
+                "WHERE a.appointment_id IS NULL;"
+            )]
+
+    if pack == "library":
+        if "book" in text and ("borrowed" in text or "borrow" in text) and "member" in text:
+            return [(
+                "SELECT\n"
+                "    m.first_name,\n"
+                "    m.last_name,\n"
+                "    b.title,\n"
+                "    br.borrow_date,\n"
+                "    br.return_date\n"
+                "FROM members m\n"
+                "JOIN borrow_records br\n"
+                "ON m.member_id = br.member_id\n"
+                "JOIN books b\n"
+                "ON br.book_id = b.book_id;"
+            )]
+        if "most borrowed" in text or ("top" in text and "borrowed" in text):
+            return [(
+                "SELECT\n"
+                "    b.title,\n"
+                "    COUNT(br.borrow_id) AS borrow_count\n"
+                "FROM books b\n"
+                "JOIN borrow_records br\n"
+                "ON b.book_id = br.book_id\n"
+                "GROUP BY b.title\n"
+                "ORDER BY borrow_count DESC\n"
+                "LIMIT 5;"
+            )]
+        if "overdue" in text:
+            return ["SELECT *\nFROM borrow_records\nWHERE return_date IS NULL\nAND due_date < CURRENT_DATE;"]
+        if "author" in text and "book" in text:
+            return [(
+                "SELECT\n"
+                "    a.author_name,\n"
+                "    b.title\n"
+                "FROM authors a\n"
+                "JOIN books b\n"
+                "ON a.author_id = b.author_id;"
+            )]
+
+    if pack == "banking":
+        if "balance" in text and "customer" in text:
+            return [(
+                "SELECT\n"
+                "    c.customer_id,\n"
+                "    c.first_name,\n"
+                "    c.last_name,\n"
+                "    a.account_id,\n"
+                "    a.balance\n"
+                "FROM customers c\n"
+                "JOIN accounts a\n"
+                "ON c.customer_id = a.customer_id;"
+            )]
+        if "total" in text and "transaction" in text and "account" in text:
+            return [(
+                "SELECT\n"
+                "    a.account_id,\n"
+                "    COUNT(t.transaction_id) AS transaction_count,\n"
+                "    SUM(t.amount) AS total_transaction_amount\n"
+                "FROM accounts a\n"
+                "LEFT JOIN transactions t\n"
+                "ON a.account_id = t.account_id\n"
+                "GROUP BY a.account_id\n"
+                "ORDER BY transaction_count DESC;"
+            )]
+        if "customer" in text and re.search(r"\b(no transactions|without transactions)\b", text):
+            return [(
+                "SELECT\n"
+                "    c.customer_id,\n"
+                "    c.first_name,\n"
+                "    c.last_name\n"
+                "FROM customers c\n"
+                "JOIN accounts a\n"
+                "ON c.customer_id = a.customer_id\n"
+                "LEFT JOIN transactions t\n"
+                "ON a.account_id = t.account_id\n"
+                "WHERE t.transaction_id IS NULL;"
+            )]
+        if "highest transaction" in text:
+            return ["SELECT *\nFROM transactions\nORDER BY amount DESC\nLIMIT 5;"]
+
+    if pack == "booking":
+        if "booking" in text and "guest" in text:
+            return [(
+                "SELECT\n"
+                "    g.first_name,\n"
+                "    g.last_name,\n"
+                "    b.booking_id,\n"
+                "    b.check_in_date,\n"
+                "    b.check_out_date,\n"
+                "    b.status\n"
+                "FROM guests g\n"
+                "JOIN bookings b\n"
+                "ON g.guest_id = b.guest_id;"
+            )]
+        if "available rooms" in text or ("room" in text and "available" in text):
+            return [(
+                "SELECT\n"
+                "    h.hotel_name,\n"
+                "    r.room_id,\n"
+                "    r.room_number,\n"
+                "    r.room_type,\n"
+                "    r.price_per_night\n"
+                "FROM rooms r\n"
+                "JOIN hotels h\n"
+                "ON r.hotel_id = h.hotel_id\n"
+                "WHERE r.status = 'Available';"
+            )]
+        if "count" in text and "booking" in text and "hotel" in text:
+            return [(
+                "SELECT\n"
+                "    h.hotel_name,\n"
+                "    COUNT(b.booking_id) AS booking_count\n"
+                "FROM hotels h\n"
+                "LEFT JOIN rooms r\n"
+                "ON h.hotel_id = r.hotel_id\n"
+                "LEFT JOIN bookings b\n"
+                "ON r.room_id = b.room_id\n"
+                "GROUP BY h.hotel_name\n"
+                "ORDER BY booking_count DESC;"
+            )]
+        if "payment" in text and "guest" in text:
+            return [(
+                "SELECT\n"
+                "    g.first_name,\n"
+                "    g.last_name,\n"
+                "    SUM(p.amount) AS total_payment\n"
+                "FROM guests g\n"
+                "JOIN bookings b\n"
+                "ON g.guest_id = b.guest_id\n"
+                "JOIN payments p\n"
+                "ON b.booking_id = p.booking_id\n"
+                "GROUP BY g.first_name, g.last_name\n"
+                "ORDER BY total_payment DESC;"
+            )]
+
+    return None
 
 
 def _grouped_rank_limit(intent: dict[str, Any]) -> int:
@@ -490,6 +804,35 @@ def build_count_query(intent: dict[str, Any], schema: dict[str, Any], db_type: s
 
 
 def build_insert_query(intent: dict[str, Any], schema: dict[str, Any], db_type: str) -> str:
+    normalized = intent.get("normalized_text", "")
+    original = intent.get("original_text", "")
+    if (schema.get("schema_pack") == "hr" or "employee" in normalized) and "employee" in normalized:
+        name_match = (
+            re.search(r"\bnamed\s+([a-z]+)(?:\s+([a-z]+))?", original, re.IGNORECASE)
+            or re.search(r"\bemployee\s+([a-z]+)(?:\s+([a-z]+))?", original, re.IGNORECASE)
+        )
+        salary_match = re.search(r"\bsalary\s+(?:is\s+|to\s+)?(\d+(?:\.\d+)?)\b", normalized)
+        if name_match and salary_match:
+            first_name = name_match.group(1).title()
+            last_name = (name_match.group(2) or "").title()
+            cols = ["first_name"]
+            vals = [_quote_string(first_name)]
+            if last_name:
+                cols.append("last_name")
+                vals.append(_quote_string(last_name))
+            cols.append("salary")
+            vals.append(salary_match.group(1))
+            col_lines = ",\n    ".join(cols)
+            val_lines = ",\n    ".join(vals)
+            return (
+                "INSERT INTO employees (\n"
+                f"    {col_lines}\n"
+                ")\n"
+                "VALUES (\n"
+                f"    {val_lines}\n"
+                ");"
+            )
+
     table = resolve_target_table(intent, schema)
     if not table:
         return "-- Error: no target table for INSERT"
@@ -506,6 +849,18 @@ def build_insert_query(intent: dict[str, Any], schema: dict[str, Any], db_type: 
 
 def build_update_query(intent: dict[str, Any], schema: dict[str, Any], db_type: str) -> str:
     _ = db_type
+    normalized = intent.get("normalized_text", "")
+    if (schema.get("schema_pack") == "hr" or "employee" in normalized) and "employee" in normalized and "salary" in normalized:
+        salary_match = re.search(r"\bsalary\s+(?:to|=|is)\s+(\d+(?:\.\d+)?)\b", normalized)
+        employee_id_match = re.search(r"\bemployee\s+id\s+(?:is\s+|=)?(\d+)\b|\bemployee_id\s*(?:=|is)?\s*(\d+)\b", normalized)
+        if salary_match and employee_id_match:
+            employee_id = next(g for g in employee_id_match.groups() if g)
+            return (
+                "UPDATE employees\n"
+                f"SET salary = {salary_match.group(1)}\n"
+                f"WHERE employee_id = {employee_id};"
+            )
+
     table = resolve_target_table(intent, schema)
     if not table:
         return "-- Error: no target table for UPDATE"
@@ -537,6 +892,16 @@ def build_update_query(intent: dict[str, Any], schema: dict[str, Any], db_type: 
 
 def build_delete_query(intent: dict[str, Any], schema: dict[str, Any], db_type: str) -> str:
     _ = db_type
+    normalized = intent.get("normalized_text", "")
+    if (schema.get("schema_pack") == "hr" or "employee" in normalized) and "employee" in normalized:
+        employee_id_match = re.search(r"\bemployee\s+id\s+(?:is\s+|=)?(\d+)\b|\bemployee_id\s*(?:=|is)?\s*(\d+)\b", normalized)
+        if employee_id_match:
+            employee_id = next(g for g in employee_id_match.groups() if g)
+            return (
+                "DELETE FROM employees\n"
+                f"WHERE employee_id = {employee_id};"
+            )
+
     table = resolve_target_table(intent, schema)
     if not table:
         return "-- Error: no target table for DELETE"
@@ -570,6 +935,10 @@ def generate_all_queries(
 
     if intent.get("unsupported_schema") or action == "UNSUPPORTED_SCHEMA":
         return []
+
+    pack_queries = _schema_pack_queries(intent, schema, db_type)
+    if pack_queries:
+        return pack_queries
 
     if intent.get("grouped_ranking"):
         return build_grouped_ranking_queries(intent)

@@ -39,11 +39,12 @@ from database import execute_query, is_db_connected, test_connection
 from history import add_entry, clear_history, get_history
 from impact_analyzer import analyze_impact
 from prompt_processor import process_prompt
+from query_accuracy_guard import validate_query_accuracy
 from query_explainer import generate_explanation
 from query_generator import generate_all_queries
-from schema_reader import get_schema_details, get_table_names, load_schema
+from schema_reader import detect_schema_pack, get_schema_details, get_table_names, load_schema, normalize_schema_pack
 from security import create_limiter
-from validator import validate_query, get_statement_type
+from validator import check_operation_permission, classify_sql_operation, validate_query, get_statement_type
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -67,11 +68,20 @@ def _normalize_database_type(raw: str) -> str:
 
 def _generic_user_impact(query_type: str) -> str:
     """Return privacy-safe impact text for non-admin users."""
-    if query_type in ("INVALID_PROMPT", "MULTIPLE_PROMPTS_DETECTED", "UNSUPPORTED_SCHEMA", "UNSAFE_REQUEST"):
+    if query_type in (
+        "INVALID_PROMPT",
+        "MULTIPLE_PROMPTS_DETECTED",
+        "UNSUPPORTED_SCHEMA",
+        "UNSUPPORTED_DOMAIN",
+        "UNSAFE_REQUEST",
+        "UNSAFE_SCHEMA_OPERATION",
+        "SCHEMA_CREATION_GUIDANCE",
+        "ACCESS_DENIED_OPERATION",
+    ):
         return "No SQL query was generated."
     if query_type == "SELECT":
-        return "This query may return matching records. Exact row counts are restricted to admin."
-    return "This query may affect database records. Execution and exact row counts are restricted to admin."
+        return "This query may return matching records. Exact row counts and schema details are restricted."
+    return "This query may affect database records. Execution, exact row counts, and schema details are restricted."
 
 
 def _sanitize_response_for_role(response: dict, role: str) -> dict:
@@ -79,50 +89,155 @@ def _sanitize_response_for_role(response: dict, role: str) -> dict:
     if role == "admin":
         return response
     sanitized = dict(response)
+    query_type = sanitized.get("query_type", "SELECT")
     sanitized["affected_tables"] = []
     sanitized["affected_columns"] = []
-    sanitized["expected_output"] = _generic_user_impact(sanitized.get("query_type", "SELECT"))
+    sanitized["expected_output"] = _generic_user_impact(query_type)
     sanitized["role_scope"] = "user"
+    for key in (
+        "available_schema",
+        "required_tables",
+        "schema_details",
+        "detected_tables",
+        "exact_row_count",
+        "schema_pack",
+        "detected_domain",
+    ):
+        sanitized.pop(key, None)
+
+    if query_type in ("UNSUPPORTED_SCHEMA", "UNSUPPORTED_DOMAIN"):
+        sanitized.update({
+            "query_type": query_type,
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "No SQL query was generated to avoid incorrect output.",
+                "Please contact the admin if this type of data needs to be added.",
+            ],
+            "expected_output": "No SQL query was generated.",
+            "validation": "Unsupported request",
+            "optimization_suggestion": "Contact the admin to add or connect the required database.",
+            "suggestion": "Contact the admin to add or connect the required database.",
+            "warning": "Unsupported request.",
+        })
     return sanitized
 
 
-def _run_pipeline(prompt: str, database_type: str, role: str = "admin") -> dict:
+def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_pack: str = "auto") -> dict:
     """
     Execute the full NL → SQL pipeline and return the API response dict.
 
     Steps follow the viva-friendly orchestration order:
       prompt → generate → validate → explain → impact → history
     """
-    schema = load_schema(database_type)
+    def scoped(response: dict) -> dict:
+        return _sanitize_response_for_role(response, role)
+
+    schema_decision = detect_schema_pack(prompt, schema_pack)
+    if schema_decision.get("unsupported"):
+        return scoped({
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "schema_pack": normalize_schema_pack(schema_pack),
+            "detected_domain": schema_decision.get("detected_domain", ""),
+            "required_tables": [],
+            "suggestion": "Ask an admin to add a matching schema pack for this domain.",
+            "query_type": "UNSUPPORTED_DOMAIN",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "This request does not match any currently available schema pack.",
+                "No SQL query was generated to avoid incorrect output.",
+                "Ask an admin to add a matching schema pack for this domain.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated because no matching local schema pack was found.",
+            "validation": "Unsupported domain",
+            "optimization_suggestion": "Choose a supported schema pack or add a new local schema pack.",
+            "warning": "Unsupported domain.",
+        })
+
+    resolved_schema_pack = schema_decision["schema_pack"]
+    schema = load_schema(database_type, resolved_schema_pack)
     known_tables = get_table_names(schema)
 
     # Step 1: Rule-based NLP
     intent = process_prompt(prompt, known_tables, schema)
 
-    if role == "user" and intent.get("action") in ("UPDATE", "DELETE", "TRANSACTION"):
-        return {
+    if intent.get("schema_creation_guidance"):
+        return scoped({
             "user_prompt": prompt,
             "database_type": database_type,
-            "query_type": "UNSAFE_REQUEST",
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
+            "query_type": "SCHEMA_CREATION_GUIDANCE",
             "generated_queries": [],
             "selected_query": "",
             "explanation": [
-                "This request may modify database records.",
-                "Only admins can generate or execute UPDATE, DELETE, or transaction queries.",
-                "Please use a read-only request.",
+                "Schema creation is not available from the normal Text-to-SQL workspace.",
+                "Admins can add new schemas by importing approved SQL schema files.",
+                "This protects the database from accidental or incomplete table creation.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated for schema creation.",
+            "validation": "Schema creation guidance",
+            "optimization_suggestion": "Create a schema pack SQL file and import it manually through MySQL or PostgreSQL.",
+            "suggestion": "Create a schema pack SQL file and import it manually through MySQL or PostgreSQL.",
+            "warning": "Schema creation is blocked from this workspace.",
+        })
+
+    if intent.get("unsafe_schema_operation"):
+        return scoped({
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
+            "query_type": "UNSAFE_SCHEMA_OPERATION",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "This request attempts to change or remove database structure.",
+                "For safety, En2SQL blocks destructive schema operations such as DROP, ALTER, TRUNCATE, GRANT, and REVOKE.",
+                "Schema-level changes should be performed manually by an authorized database administrator.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated because schema-level operations are blocked.",
+            "validation": "Blocked unsafe schema operation",
+            "optimization_suggestion": "Use approved schema pack SQL files for schema-level changes.",
+            "warning": "Blocked unsafe schema operation.",
+        })
+
+    if role == "user" and intent.get("action") in ("INSERT", "UPDATE", "DELETE", "TRANSACTION"):
+        return scoped({
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
+            "query_type": "ACCESS_DENIED_OPERATION",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "This operation can modify database records.",
+                "User accounts are allowed to generate read-only SELECT queries only.",
+                "Please contact the admin for modification operations.",
             ],
             "affected_tables": [],
             "affected_columns": [],
             "expected_output": "No SQL query was generated because this operation is restricted to admin.",
-            "validation": "Restricted operation",
+            "validation": "Access denied",
             "optimization_suggestion": "Try a SELECT request that only reads data.",
-            "warning": "Admin-only operation.",
-        }
+            "warning": "Access denied.",
+        })
 
     if intent.get("invalid_prompt"):
-        return {
+        return scoped({
             "user_prompt": prompt,
             "database_type": database_type,
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
             "query_type": "INVALID_PROMPT",
             "generated_queries": [],
             "selected_query": "",
@@ -136,12 +251,14 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin") -> dict:
             "validation": "Please enter a clear request.",
             "optimization_suggestion": "Try a complete prompt such as: Show all employees whose salary is greater than 50000.",
             "warning": "Invalid prompt.",
-        }
+        })
 
     if intent.get("unsafe_request"):
-        return {
+        return scoped({
             "user_prompt": prompt,
             "database_type": database_type,
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
             "query_type": "UNSAFE_REQUEST",
             "generated_queries": [],
             "selected_query": "",
@@ -156,12 +273,14 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin") -> dict:
             "validation": "Unsafe request detected.",
             "optimization_suggestion": "Use a safe read-only request or a clearly supported update/delete request.",
             "warning": "Unsafe request detected.",
-        }
+        })
 
     if intent.get("multiple_prompts_detected"):
-        return {
+        return scoped({
             "user_prompt": prompt,
             "database_type": database_type,
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
             "query_type": "MULTIPLE_PROMPTS_DETECTED",
             "generated_queries": [],
             "selected_query": "",
@@ -176,12 +295,14 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin") -> dict:
             "validation": "Please enter one request at a time.",
             "optimization_suggestion": "Split your input into separate prompts and generate them one by one.",
             "warning": "Multiple prompts detected.",
-        }
+        })
 
     if intent.get("unsupported_schema"):
-        return {
+        return scoped({
             "user_prompt": prompt,
             "database_type": database_type,
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
             "query_type": "UNSUPPORTED_SCHEMA",
             "generated_queries": [],
             "selected_query": "",
@@ -196,17 +317,106 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin") -> dict:
             "validation": "Unsupported schema",
             "optimization_suggestion": "Add the required schema or use one of the available demo tables.",
             "warning": "Unsupported schema.",
-        }
+        })
 
     # Step 2: SQL generation (user-facing queries only)
     generated_queries = generate_all_queries(intent, schema, database_type)
-    selected_query = generated_queries[0]
+
+    # Step 2b: Logic-level guard — catches syntactically valid but incomplete
+    # SQL for common HR/interview prompts before validation and explanation.
+    accuracy_result = validate_query_accuracy(
+        prompt,
+        generated_queries,
+        intent.get("action", "SELECT"),
+        database_type,
+    )
+    generated_queries = accuracy_result["generated_queries"]
+    selected_query = accuracy_result["selected_query"]
 
     # Step 3: Validation (sqlparse — preserves clean academic SQL format)
     validation_result = validate_query(selected_query, schema)
+    operation = classify_sql_operation(selected_query)
+    if operation in ("UPDATE", "DELETE") and "WHERE" not in selected_query.upper():
+        return scoped({
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
+            "query_type": "UNSAFE_REQUEST",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "This request may modify many database records.",
+                "UPDATE and DELETE queries must include a specific WHERE condition.",
+                "Please provide a specific condition such as employee_id to avoid modifying multiple records.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated because the modification was too broad.",
+            "validation": "Specific WHERE condition required",
+            "optimization_suggestion": "Please provide a specific condition such as employee_id to avoid modifying multiple records.",
+            "warning": "Please provide a specific condition such as employee_id to avoid modifying multiple records.",
+        })
+
+    permission = check_operation_permission(operation, role, confirmed=False, for_execution=False)
+    if not permission["allowed"]:
+        if permission.get("guidance"):
+            return scoped({
+                "user_prompt": prompt,
+                "database_type": database_type,
+                "schema_pack": resolved_schema_pack,
+                "detected_domain": resolved_schema_pack,
+                "query_type": "SCHEMA_CREATION_GUIDANCE",
+                "generated_queries": [],
+                "selected_query": "",
+                "explanation": [
+                    "Schema creation is not available from the normal Text-to-SQL workspace.",
+                    "Admins can add new schemas by importing approved SQL schema files.",
+                    "This protects the database from accidental or incomplete table creation.",
+                ],
+                "affected_tables": [],
+                "affected_columns": [],
+                "expected_output": "No SQL query was generated for schema creation.",
+                "validation": "Schema creation guidance",
+                "optimization_suggestion": "Create a schema pack SQL file and import it manually through MySQL or PostgreSQL.",
+                "suggestion": "Create a schema pack SQL file and import it manually through MySQL or PostgreSQL.",
+                "warning": "Schema creation is blocked from this workspace.",
+            })
+        return scoped({
+            "user_prompt": prompt,
+            "database_type": database_type,
+            "schema_pack": resolved_schema_pack,
+            "detected_domain": resolved_schema_pack,
+            "query_type": "UNSAFE_SCHEMA_OPERATION" if permission.get("unsafe_schema_operation") else "ACCESS_DENIED_OPERATION",
+            "generated_queries": [],
+            "selected_query": "",
+            "explanation": [
+                "This request is not allowed by the En2SQL operation policy.",
+                permission.get("reason", "The operation is blocked."),
+                "Please use a safe read-only request or contact the admin.",
+            ],
+            "affected_tables": [],
+            "affected_columns": [],
+            "expected_output": "No SQL query was generated.",
+            "validation": "Operation blocked",
+            "optimization_suggestion": "Use a supported SELECT request or an approved admin workflow.",
+            "warning": permission.get("reason", "Operation blocked."),
+        })
+
+    if accuracy_result.get("guard_applied"):
+        validation_result["validation_message"] += (
+            f" Query accuracy guard applied: {accuracy_result.get('guard_reason')}"
+        )
+    if operation in ("INSERT", "UPDATE", "DELETE"):
+        validation_result["warning_message"] = (
+            validation_result["warning_message"] + " | " if validation_result["warning_message"] else ""
+        ) + "This query may modify database records and requires confirmation before execution."
 
     # Step 4: Explanation
-    explanation = generate_explanation(intent, selected_query, database_type)
+    explanation = (
+        accuracy_result.get("explanation")
+        or generate_explanation(intent, selected_query, database_type)
+    )
 
     # Step 5: Impact analysis (COUNT(*) used internally, not in generated_queries)
     impact = analyze_impact(selected_query, intent, schema, database_type)
@@ -232,6 +442,8 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin") -> dict:
     response = {
         "user_prompt": prompt,
         "database_type": database_type,
+        "schema_pack": resolved_schema_pack,
+        "detected_domain": resolved_schema_pack,
         "query_type": intent.get("action", "SELECT"),
         "generated_queries": generated_queries,
         "selected_query": selected_query,
@@ -380,7 +592,7 @@ def schema():
     regions, countries, locations, jobs, departments, employees, dependents.
     """
     try:
-        details = get_schema_details()
+        details = get_schema_details(request.args.get("schema_pack") or "hr")
         return jsonify(details)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -402,6 +614,7 @@ def generate():
     try:
         data = request.get_json(silent=True) or {}
         prompt = (data.get("prompt") or "").strip()
+        schema_pack = data.get("schema_pack") or "auto"
 
         try:
             database_type = _normalize_database_type(
@@ -411,7 +624,7 @@ def generate():
             return jsonify({"error": str(exc)}), 400
 
         user = get_request_user() or {}
-        response = _run_pipeline(prompt, database_type, role=user.get("role", "user"))
+        response = _run_pipeline(prompt, database_type, role=user.get("role", "user"), schema_pack=schema_pack)
         return jsonify(response)
 
     except Exception as exc:
@@ -444,6 +657,7 @@ def execute():
     try:
         data = request.get_json(silent=True) or {}
         query = (data.get("query") or data.get("sql") or "").strip()
+        confirmed = bool(data.get("confirmed"))
 
         if not query:
             return jsonify({
@@ -463,6 +677,29 @@ def execute():
                 "columns": [],
                 "rows": [],
                 "message": str(exc),
+            }), 400
+
+        operation = classify_sql_operation(query)
+        permission = check_operation_permission(operation, "admin", confirmed=confirmed, for_execution=True)
+        if not permission["allowed"]:
+            if permission.get("confirmation_required"):
+                return jsonify({
+                    "error": "Confirmation required",
+                    "message": "This query may modify database records. Please confirm before execution.",
+                }), 400
+            return jsonify({
+                "status": "error",
+                "columns": [],
+                "rows": [],
+                "message": permission.get("reason", "Operation blocked."),
+            }), 403
+
+        if operation in ("UPDATE", "DELETE") and "WHERE" not in query.upper():
+            return jsonify({
+                "status": "error",
+                "columns": [],
+                "rows": [],
+                "message": "UPDATE and DELETE queries must include a WHERE condition.",
             }), 400
 
         # Validate before execution
