@@ -5,6 +5,8 @@ import re
 from prompt_processor import process_prompt
 from query_accuracy_guard import validate_query_accuracy
 from query_generator import generate_all_queries
+from config import Config
+from database import get_database_key
 from schema_reader import detect_schema_pack, get_schema_pack, get_table_names
 from validator import validate_query
 
@@ -225,3 +227,71 @@ def test_unknown_domain_does_not_match_schema_pack():
 
     assert decision["unsupported"] is True
     assert decision["schema_pack"] == ""
+
+
+def test_detected_domains_resolve_to_separate_internal_databases():
+    banking = detect_schema_pack("Transfer 5000 from account ACC001 to account ACC002", "auto")
+    booking = detect_schema_pack("Show bookings by guest", "auto")
+
+    assert banking["schema_pack"] == "banking"
+    assert booking["schema_pack"] == "booking"
+    assert get_database_key("mysql", banking["schema_pack"]) != get_database_key("mysql", booking["schema_pack"])
+
+
+def test_acceptance_prompts_detect_expected_internal_domains():
+    cases = {
+        "Find the top 5 highest-paid employees": "hr",
+        "Show students enrolled in each course": "university",
+        "Show doctors with their appointments": "healthcare",
+        "Show books borrowed by members": "library",
+        "Find the top 3 products by total sales revenue": "ecommerce",
+        "Show all transactions for account id 1": "banking",
+        "Show hotel bookings with guest names": "booking",
+    }
+
+    for prompt, expected_pack in cases.items():
+        assert detect_schema_pack(prompt, "auto")["schema_pack"] == expected_pack
+
+
+def test_mysql_schema_pack_database_names_match_internal_mapping():
+    expected = {
+        "hr": "test",
+        "university": "en2sql_university",
+        "healthcare": "en2sql_healthcare",
+        "library": "en2sql_library",
+        "ecommerce": "en2sql_ecommerce",
+        "banking": "en2sql_banking",
+        "booking": "en2sql_booking",
+    }
+
+    for pack, database_name in expected.items():
+        assert Config.get_internal_database_name("mysql", pack) == database_name
+
+
+def test_pipeline_returns_structured_recommended_and_alternative_queries():
+    from app import _run_pipeline
+
+    result = _run_pipeline("Show employee name with department name", "mysql", role="admin")
+
+    assert result["dialect"] == "mysql"
+    assert len(result["generated_queries"]) == 2
+    assert result["recommended_query"]["label"] == "Option 1"
+    assert result["recommended_query"]["title"] == "Recommended Query"
+    assert result["recommended_query"]["sql"] == result["generated_queries"][0]
+    assert result["recommended_query"]["why_best"]
+    assert result["recommended_query"]["validation"]["is_valid"] is True
+    assert result["alternative_query"]["label"] == "Option 2"
+    assert result["alternative_query"]["title"] == "Alternative Query"
+    assert result["alternative_query"]["sql"] == result["generated_queries"][1]
+    assert result["alternative_query"]["why_less_favourable"]
+    assert "CONCAT(" in result["alternative_query"]["sql"]
+
+
+def test_postgresql_option_uses_selected_dialect_only():
+    from app import _run_pipeline
+
+    result = _run_pipeline("Show employee name with department name", "postgresql", role="admin")
+
+    assert result["dialect"] == "postgresql"
+    assert " || ' ' || " in result["alternative_query"]["sql"]
+    assert "CONCAT(" not in result["alternative_query"]["sql"]

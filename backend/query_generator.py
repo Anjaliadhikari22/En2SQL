@@ -956,3 +956,124 @@ def generate_all_queries(
 
     builder = builders.get(action, build_select_query)
     return [builder(intent, schema, db_type)]
+
+
+def ensure_two_query_options(
+    intent: dict[str, Any],
+    schema: dict[str, Any],
+    db_type: str,
+    queries: list[str],
+) -> list[str]:
+    """Return exactly two user-facing SQL options for supported prompts."""
+    cleaned = [q for q in (queries or []) if q and not q.strip().startswith("-- Error")]
+    if len(cleaned) >= 2:
+        return cleaned[:2]
+    if not cleaned:
+        return []
+
+    primary = cleaned[0]
+    alternative = build_alternative_query(intent, schema, db_type, primary)
+    if alternative and _compact_sql(alternative) != _compact_sql(primary):
+        return [primary, alternative]
+    return [primary, primary]
+
+
+def _compact_sql(sql: str) -> str:
+    return re.sub(r"\s+", " ", (sql or "").strip()).upper()
+
+
+def build_alternative_query(
+    intent: dict[str, Any],
+    schema: dict[str, Any],
+    db_type: str,
+    primary_sql: str,
+) -> str:
+    """Build a dialect-compatible alternative query for common supported prompts."""
+    text = intent.get("normalized_text", "")
+    upper = _compact_sql(primary_sql)
+    pack = (schema.get("schema_pack") or intent.get("schema_pack") or "hr").lower()
+
+    if pack == "hr":
+        if "employee" in text and "department" in text and "JOIN DEPARTMENTS" in upper:
+            full_name = "CONCAT(e.first_name, ' ', e.last_name)" if _is_mysql(db_type) else "e.first_name || ' ' || e.last_name"
+            return (
+                "SELECT\n"
+                f"    {full_name} AS employee_name,\n"
+                "    d.department_name\n"
+                "FROM employees e\n"
+                "JOIN departments d\n"
+                "ON e.department_id = d.department_id;"
+            )
+
+        if "department" in text and re.search(r"\b(no employees|without employees|empty departments?)\b", text):
+            return (
+                "SELECT\n"
+                "    d.department_id,\n"
+                "    d.department_name\n"
+                "FROM departments d\n"
+                "WHERE NOT EXISTS (\n"
+                "    SELECT 1\n"
+                "    FROM employees e\n"
+                "    WHERE e.department_id = d.department_id\n"
+                ");"
+            )
+
+        if "employee" in text and re.search(r"\b(more than|greater than|above)\s+(?:the\s+)?average\s+salary\b|\bsalary\s+(?:greater than|more than|above)\s+(?:the\s+)?average\b", text):
+            return _avg_salary_join_query(">")
+
+        if "employee" in text and re.search(r"\b(less than|below|under)\s+(?:the\s+)?average\s+salary\b|\bsalary\s+(?:less than|below|under)\s+(?:the\s+)?average\b", text):
+            return _avg_salary_join_query("<")
+
+        if "employee" in text and re.search(r"\btop\s+\d+", text) and re.search(r"\bhighest(?: paid)?|salar", text):
+            n = intent.get("limit") or (re.search(r"\btop\s+(\d+)\b", text) or [None, "5"])[1]
+            return (
+                "SELECT\n"
+                "    employee_id,\n"
+                "    first_name,\n"
+                "    last_name,\n"
+                "    salary\n"
+                "FROM employees\n"
+                "ORDER BY salary DESC\n"
+                f"LIMIT {n};"
+            )
+
+        if "random" in text and "employee" in text:
+            n = intent.get("limit") or (re.search(r"\b(\d+)\s+random\s+employees?\b", text) or [None, "3"])[1]
+            random_function = "RANDOM()" if _is_postgresql(db_type) else "RAND()"
+            return (
+                "SELECT\n"
+                "    employee_id,\n"
+                "    first_name,\n"
+                "    last_name,\n"
+                "    salary\n"
+                "FROM employees\n"
+                f"ORDER BY {random_function}\n"
+                f"LIMIT {n};"
+            )
+
+    if "JOIN " in upper:
+        return re.sub(r"\bJOIN\b", "INNER JOIN", primary_sql, count=1)
+
+    table = resolve_target_table(intent, schema)
+    columns = schema.get("tables", {}).get(table or "", {}).get("columns", [])
+    if table and columns and "SELECT *" in upper:
+        selected = ", ".join(columns[: min(4, len(columns))])
+        return re.sub(r"SELECT\s+\*", f"SELECT {selected}", primary_sql, count=1, flags=re.IGNORECASE)
+
+    return primary_sql
+
+
+def _avg_salary_join_query(operator: str) -> str:
+    return (
+        "SELECT\n"
+        "    e.employee_id,\n"
+        "    e.first_name,\n"
+        "    e.last_name,\n"
+        "    e.salary\n"
+        "FROM employees e\n"
+        "JOIN (\n"
+        "    SELECT AVG(salary) AS average_salary\n"
+        "    FROM employees\n"
+        ") avg_salary\n"
+        f"ON e.salary {operator} avg_salary.average_salary;"
+    )

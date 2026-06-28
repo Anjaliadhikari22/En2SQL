@@ -15,6 +15,7 @@ URL: http://localhost:5000
 
 import os
 import traceback
+from typing import Any
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -35,13 +36,13 @@ from auth import (
 )
 from auth import require_role
 from config import Config
-from database import execute_query, is_db_connected, test_connection
+from database import execute_query, get_database_key, is_db_connected, test_connection
 from history import add_entry, clear_history, get_history
 from impact_analyzer import analyze_impact
 from prompt_processor import process_prompt
 from query_accuracy_guard import validate_query_accuracy
 from query_explainer import generate_explanation
-from query_generator import generate_all_queries
+from query_generator import ensure_two_query_options, generate_all_queries
 from schema_reader import detect_schema_pack, get_schema_details, get_table_names, load_schema, normalize_schema_pack
 from security import create_limiter
 from validator import check_operation_permission, classify_sql_operation, validate_query, get_statement_type
@@ -94,6 +95,16 @@ def _sanitize_response_for_role(response: dict, role: str) -> dict:
     sanitized["affected_columns"] = []
     sanitized["expected_output"] = _generic_user_impact(query_type)
     sanitized["role_scope"] = "user"
+    for option_key in ("recommended_query", "alternative_query"):
+        option = sanitized.get(option_key)
+        if isinstance(option, dict):
+            option = dict(option)
+            impact = dict(option.get("impact") or {})
+            impact["summary"] = _generic_user_impact(query_type)
+            impact.pop("affected_tables", None)
+            impact.pop("affected_columns", None)
+            option["impact"] = impact
+            sanitized[option_key] = option
     for key in (
         "available_schema",
         "required_tables",
@@ -102,6 +113,7 @@ def _sanitize_response_for_role(response: dict, role: str) -> dict:
         "exact_row_count",
         "schema_pack",
         "detected_domain",
+        "database_key",
     ):
         sanitized.pop(key, None)
 
@@ -111,6 +123,8 @@ def _sanitize_response_for_role(response: dict, role: str) -> dict:
             "generated_queries": [],
             "selected_query": "",
             "explanation": [
+                "Unsupported request.",
+                "This request needs data that is not available in the current connected databases.",
                 "No SQL query was generated to avoid incorrect output.",
                 "Please contact the admin if this type of data needs to be added.",
             ],
@@ -121,6 +135,113 @@ def _sanitize_response_for_role(response: dict, role: str) -> dict:
             "warning": "Unsupported request.",
         })
     return sanitized
+
+
+def _as_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if value:
+        return [str(value)]
+    return []
+
+
+def _query_option_reason(sql: str, intent: dict[str, Any], *, recommended: bool) -> list[str]:
+    normalized = intent.get("normalized_text", "")
+    upper = sql.upper()
+    if recommended:
+        if "ROW_NUMBER()" in upper:
+            return [
+                "ROW_NUMBER gives exactly the requested number of rows per group.",
+                "It is clear and efficient for ranking within groups.",
+                "It is widely used for top-N-per-group queries.",
+            ]
+        if "SELECT MAX(SALARY)" in upper:
+            return [
+                "This query finds the salary using a focused aggregate subquery.",
+                "It avoids hardcoding salary values.",
+                "It is simple, readable, and efficient.",
+            ]
+        if "JOIN DEPARTMENTS" in upper and "employee" in normalized and "department" in normalized:
+            return [
+                "This query directly joins employees with departments.",
+                "It uses the correct foreign key relationship.",
+                "It keeps first name and last name available as separate fields.",
+            ]
+        return [
+            "This query is recommended because it is simple and efficient.",
+            "It uses the most direct relationship between the required tables.",
+            "It is easier to understand and maintain.",
+        ]
+
+    if "DENSE_RANK()" in upper:
+        return [
+            "DENSE_RANK handles ties but may return more rows than requested.",
+            "It is useful when tied values should be included.",
+            "It is less suitable if the user expects an exact row count per group.",
+        ]
+    if "CONCAT(" in upper or " || " in sql:
+        return [
+            "This query is also correct but combines first and last name into one column.",
+            "It is less flexible if separate name fields are needed.",
+            "It is useful when a single full-name column is preferred.",
+        ]
+    if "NOT EXISTS" in upper:
+        return [
+            "This query is also correct but uses an anti-subquery style.",
+            "It may be less familiar than a LEFT JOIN with IS NULL.",
+            "Use it when you prefer existence checks.",
+        ]
+    return [
+        "This query is also correct but may be less preferred.",
+        "It may be slightly less readable or less efficient than the recommended query.",
+        "Use it when the alternative style is specifically needed.",
+    ]
+
+
+def _query_optimization(sql: str, *, recommended: bool) -> list[str]:
+    upper = sql.upper()
+    if " JOIN " in upper:
+        return ["Indexes on join columns can improve performance."]
+    if "ORDER BY" in upper:
+        return ["Indexes on sorting and filtering columns can improve performance."]
+    if not recommended:
+        return ["Recommended query is preferred for clarity and performance."]
+    return ["Keep relevant filter columns indexed for better performance."]
+
+
+def _build_query_option_payload(
+    *,
+    label: str,
+    title: str,
+    sql: str,
+    intent: dict[str, Any],
+    schema: dict[str, Any],
+    database_type: str,
+    schema_pack: str,
+    recommended: bool,
+    fallback_explanation: Any = None,
+) -> dict[str, Any]:
+    validation = validate_query(sql, schema)
+    explanation = _as_list(fallback_explanation) if recommended and fallback_explanation else generate_explanation(intent, sql, database_type)
+    impact = analyze_impact(sql, intent, schema, database_type, schema_pack=schema_pack)
+    return {
+        "label": label,
+        "title": title,
+        "sql": sql,
+        "why_best" if recommended else "why_less_favourable": _query_option_reason(sql, intent, recommended=recommended),
+        "explanation": explanation,
+        "validation": {
+            "is_valid": bool(validation["validation"]["valid"]),
+            "message": validation["validation_message"],
+        },
+        "impact": {
+            "summary": impact["expected_output"],
+            "affected_tables": impact["affected_tables"],
+            "affected_columns": impact["affected_columns"],
+        },
+        "optimization": _query_optimization(sql, recommended=recommended),
+        "warning": validation["warning_message"],
+    }
 
 
 def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_pack: str = "auto") -> dict:
@@ -331,7 +452,8 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_p
         database_type,
     )
     generated_queries = accuracy_result["generated_queries"]
-    selected_query = accuracy_result["selected_query"]
+    generated_queries = ensure_two_query_options(intent, schema, database_type, generated_queries)
+    selected_query = generated_queries[0] if generated_queries else accuracy_result["selected_query"]
 
     # Step 3: Validation (sqlparse — preserves clean academic SQL format)
     validation_result = validate_query(selected_query, schema)
@@ -419,7 +541,28 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_p
     )
 
     # Step 5: Impact analysis (COUNT(*) used internally, not in generated_queries)
-    impact = analyze_impact(selected_query, intent, schema, database_type)
+    impact = analyze_impact(selected_query, intent, schema, database_type, schema_pack=resolved_schema_pack)
+    recommended_query = _build_query_option_payload(
+        label="Option 1",
+        title="Recommended Query",
+        sql=generated_queries[0],
+        intent=intent,
+        schema=schema,
+        database_type=database_type,
+        schema_pack=resolved_schema_pack,
+        recommended=True,
+        fallback_explanation=explanation,
+    ) if generated_queries else None
+    alternative_query = _build_query_option_payload(
+        label="Option 2",
+        title="Alternative Query",
+        sql=generated_queries[1],
+        intent=intent,
+        schema=schema,
+        database_type=database_type,
+        schema_pack=resolved_schema_pack,
+        recommended=False,
+    ) if len(generated_queries) > 1 else None
 
     # Step 6: Save admin generations to history. User generations are kept
     # generation-only and are not written to the admin history file.
@@ -444,9 +587,13 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_p
         "database_type": database_type,
         "schema_pack": resolved_schema_pack,
         "detected_domain": resolved_schema_pack,
+        "database_key": get_database_key(database_type, resolved_schema_pack),
+        "dialect": database_type,
         "query_type": intent.get("action", "SELECT"),
         "generated_queries": generated_queries,
         "selected_query": selected_query,
+        "recommended_query": recommended_query,
+        "alternative_query": alternative_query,
         "explanation": explanation,
         "affected_tables": impact["affected_tables"],
         "affected_columns": impact["affected_columns"],
@@ -575,11 +722,16 @@ def health():
     except ValueError:
         db_type = Config.DEFAULT_DB_TYPE
 
-    connection = test_connection(db_type)
+    schema_pack = normalize_schema_pack(request.args.get("schema_pack") or "hr")
+    connection = test_connection(db_type, schema_pack)
     return jsonify({
         "status": "ok",
         "app": "Natural Language to SQL Generator",
-        "database": connection,
+        "database": {
+            "connected": connection["connected"],
+            "db_type": connection["db_type"],
+            "mode": connection["mode"],
+        },
     })
 
 
@@ -592,7 +744,8 @@ def schema():
     regions, countries, locations, jobs, departments, employees, dependents.
     """
     try:
-        details = get_schema_details(request.args.get("schema_pack") or "hr")
+        db_type = _normalize_database_type(request.args.get("database_type") or Config.DEFAULT_DB_TYPE)
+        details = get_schema_details(request.args.get("schema_pack") or "hr", db_type=db_type)
         return jsonify(details)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -713,7 +866,8 @@ def execute():
             }), 400
 
         is_read = get_statement_type(query) in ("SELECT", "UNKNOWN")
-        result = execute_query(database_type, query, fetch=is_read)
+        schema_pack = normalize_schema_pack(data.get("schema_pack") or data.get("detected_domain") or "hr")
+        result = execute_query(database_type, query, fetch=is_read, schema_pack=schema_pack)
 
         if result["success"]:
             mode_note = ""
@@ -728,6 +882,8 @@ def execute():
                 "columns": result["columns"],
                 "rows": result["rows"],
                 "message": msg,
+                "schema_pack": schema_pack,
+                "database_key": result.get("database_key") or get_database_key(database_type, schema_pack),
             })
 
         return jsonify({
@@ -779,7 +935,7 @@ def history_clear():
 
 if __name__ == "__main__":
     os.makedirs(os.path.dirname(Config.HISTORY_FILE), exist_ok=True)
-    demo_mode = not is_db_connected("mysql") and not is_db_connected("postgresql")
+    demo_mode = not is_db_connected("mysql", "hr") and not is_db_connected("postgresql", "hr")
     print("=" * 60)
     print("  Natural Language to SQL Generator")
     print(f"  Running at: http://localhost:5000")

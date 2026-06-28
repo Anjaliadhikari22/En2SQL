@@ -50,6 +50,10 @@ def test_user_supported_join_hides_affected_tables_and_columns():
     assert result["affected_tables"] == []
     assert result["affected_columns"] == []
     assert "exact row counts and schema details are restricted" in result["expected_output"].lower()
+    assert "affected_tables" not in result["recommended_query"]["impact"]
+    assert "affected_columns" not in result["recommended_query"]["impact"]
+    assert "affected_tables" not in result["alternative_query"]["impact"]
+    assert "affected_columns" not in result["alternative_query"]["impact"]
 
 
 def test_admin_supported_join_keeps_affected_tables_and_columns():
@@ -69,3 +73,14 @@ def test_user_manual_schema_endpoint_is_forbidden():
     )
 
     assert response.status_code == 403
+
+
+def test_public_health_does_not_expose_internal_database_details():
+    response = app.test_client().get("/api/health?schema_pack=banking")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["database"]["mode"] in ("demo", "live")
+    assert "schema_pack" not in payload["database"]
+    assert "database_name" not in payload["database"]
+    assert "database_key" not in payload["database"]

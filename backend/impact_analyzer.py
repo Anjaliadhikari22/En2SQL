@@ -85,6 +85,7 @@ def _internal_row_estimate(
     intent: dict[str, Any],
     schema: dict[str, Any],
     db_type: str,
+    schema_pack: str = "hr",
 ) -> Optional[int]:
     """
     Internal COUNT(*) estimate — never returned as SQL to the user.
@@ -92,7 +93,7 @@ def _internal_row_estimate(
     Returns an integer row count when estimable, else None.
     """
     _ = db_type
-    if not is_db_connected(db_type):
+    if not is_db_connected(db_type, schema_pack):
         return None  # use hard-coded demo messages instead
 
     count_sql = build_count_query(intent, schema, db_type)
@@ -157,6 +158,7 @@ def describe_expected_impact(
     schema: dict[str, Any],
     db_type: str,
     db_connected: bool,
+    schema_pack: str = "hr",
 ) -> str:
     """Return expected output / impact string."""
     if intent.get("grouped_ranking"):
@@ -182,7 +184,7 @@ def describe_expected_impact(
 
     count_sql = build_count_query(intent, schema, db_type)
     if action == "SELECT" and count_sql:
-        count = execute_count_query(db_type, count_sql)
+        count = execute_count_query(db_type, count_sql, schema_pack=schema_pack)
         if count is not None:
             return f"{count} rows may be returned."
 
@@ -207,6 +209,7 @@ def analyze_impact(
     intent: dict[str, Any],
     schema: dict[str, Any],
     db_type: str = "mysql",
+    schema_pack: str = "hr",
 ) -> dict[str, Any]:
     """Full impact analysis for /api/generate."""
     action = intent.get("action", "SELECT").upper()
@@ -220,9 +223,10 @@ def analyze_impact(
         tables = extract_tables_from_sql(sql) or intent.get("tables", [])
         columns = extract_filter_columns(sql, intent)
 
-    db_connected = is_db_connected(db_type)
+    schema_pack = schema_pack or schema.get("schema_pack", "hr")
+    db_connected = is_db_connected(db_type, schema_pack)
     expected_output = describe_expected_impact(
-        sql, action, intent, schema, db_type, db_connected
+        sql, action, intent, schema, db_type, db_connected, schema_pack=schema_pack
     )
 
     return {

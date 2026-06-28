@@ -1538,6 +1538,105 @@ a {
   word-break: break-word;
 }
 
+.query-option-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid rgba(147, 197, 253, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.query-option-card + .query-option-card {
+  margin-top: 0.9rem;
+}
+
+.query-option-card.selected {
+  border-color: rgba(34, 197, 94, 0.34);
+}
+
+.query-option-card__header,
+.query-option-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.query-option-card__eyebrow,
+.query-option-card__badge {
+  color: #93c5fd;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.query-option-card__badge {
+  padding: 0.28rem 0.5rem;
+  border: 1px solid rgba(147, 197, 253, 0.2);
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.11);
+}
+
+.query-option-card h4,
+.query-option-card h5 {
+  margin: 0;
+  color: var(--text);
+}
+
+.query-option-card h4 {
+  font-size: 1rem;
+}
+
+.query-option-card h5 {
+  font-size: 0.82rem;
+}
+
+.query-option-card__sql {
+  max-height: 280px;
+  overflow: auto;
+  padding: 0.85rem;
+  border-radius: 8px;
+  color: var(--sql-text);
+  background: var(--sql-bg);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.option-bullets {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.query-option-card__meta {
+  display: grid;
+  gap: 0.35rem;
+  padding-top: 0.2rem;
+}
+
+.query-option-card__meta p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.btn-execute--inline {
+  width: auto;
+  min-height: 34px;
+  padding: 0.45rem 0.72rem;
+  font-size: 0.76rem;
+}
+
 /* SQL editor */
 .sql-block {
   overflow: hidden;

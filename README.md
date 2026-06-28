@@ -156,6 +156,33 @@ Application:
 | GET | `/api/history` | admin |
 | DELETE | `/api/history` | admin |
 
+## Query options
+
+For supported prompts, `/api/generate` returns two SQL options for the selected dialect only:
+
+- `recommended_query`: Option 1, the preferred SQL with rationale, explanation, validation, impact, and optimization notes.
+- `alternative_query`: Option 2, a correct alternative with why it is less favourable.
+
+If MySQL is selected, both options use MySQL syntax. If PostgreSQL is selected, both options use PostgreSQL syntax. User responses keep schema/database details and affected table/column metadata hidden.
+
+## Internal schema-pack databases
+
+En2SQL auto-detects the prompt domain and routes live introspection/execution to a matching internal database. Do not import every schema pack into one database.
+
+Default MySQL database names:
+
+| Schema pack | Database |
+|---|---|
+| HR | `test` |
+| University | `en2sql_university` |
+| Healthcare | `en2sql_healthcare` |
+| Library | `en2sql_library` |
+| E-Commerce | `en2sql_ecommerce` |
+| Banking | `en2sql_banking` |
+| Booking | `en2sql_booking` |
+
+Override with per-pack environment variables such as `HR_DATABASE_URL`, `UNIVERSITY_DATABASE_URL`, `BANKING_DATABASE_URL`, `MYSQL_BANKING_DATABASE`, `POSTGRES_BOOKING_DATABASE`, `MYSQL_BANKING_URL`, or `POSTGRES_BOOKING_URL`.
+
 ## Security features added
 
 - Passwords are hashed with Werkzeug.

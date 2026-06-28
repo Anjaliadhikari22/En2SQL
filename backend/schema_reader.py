@@ -202,13 +202,13 @@ SCHEMA_PACKS: dict[str, dict[str, Any]] = {
 
 
 SCHEMA_PACK_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "hr": ("employee", "employees", "salary", "department", "departments", "job", "jobs", "manager"),
-    "ecommerce": ("product", "products", "order", "orders", "revenue", "customer", "customers", "category", "categories", "payment", "sales"),
-    "university": ("student", "students", "course", "courses", "instructor", "enrollment", "enrollments", "grade", "grades", "marks"),
-    "healthcare": ("doctor", "doctors", "patient", "patients", "appointment", "appointments", "prescription", "prescriptions", "medicine", "medicines"),
-    "library": ("book", "books", "author", "authors", "member", "members", "borrow", "borrowed", "return", "overdue"),
-    "banking": ("account", "accounts", "transaction", "transactions", "balance", "deposit", "withdraw", "branch", "branches"),
-    "booking": ("hotel", "hotels", "room", "rooms", "guest", "guests", "booking", "bookings", "check-in", "check-out", "check in", "check out"),
+    "hr": ("employee", "employees", "salary", "department", "departments", "job", "jobs", "manager", "dependent"),
+    "university": ("student", "students", "course", "courses", "instructor", "teacher", "enrollment", "enrollments", "grade", "grades", "marks", "university"),
+    "healthcare": ("doctor", "doctors", "patient", "patients", "appointment", "appointments", "hospital", "medicine", "medicines", "prescription", "prescriptions"),
+    "library": ("book", "books", "author", "authors", "member", "members", "borrower", "issue", "issued", "return", "returned", "library"),
+    "ecommerce": ("product", "products", "customer", "customers", "order", "orders", "revenue", "sales", "category", "categories", "payment", "payments", "cart"),
+    "banking": ("account", "accounts", "transaction", "transactions", "bank", "balance", "deposit", "withdraw", "loan", "loans", "branch"),
+    "booking": ("booking", "bookings", "hotel", "hotels", "room", "rooms", "guest", "guests", "reservation", "reservations", "checkin", "checkout", "check-in", "check-out", "check in", "check out"),
 }
 
 
@@ -273,16 +273,25 @@ def get_schema_pack(schema_pack: str = "hr") -> dict[str, Any]:
     }
 
 
-def read_schema_from_db(db_type: str) -> dict[str, Any]:
+def read_schema_from_db(db_type: str, schema_pack: str = "hr") -> dict[str, Any]:
     """Introspect the live database and return a schema dictionary."""
-    engine = get_engine(db_type)
+    pack = normalize_schema_pack(schema_pack)
+    fallback = get_schema_pack(pack)
+    engine = get_engine(db_type, pack)
     inspector = inspect(engine)
-    schema: dict[str, Any] = {"source": "database", "relationships": HR_RELATIONSHIPS, "tables": {}}
+    schema: dict[str, Any] = {
+        "schema_pack": pack,
+        "display_name": fallback.get("display_name", pack.title()),
+        "source": "database",
+        "relationships": fallback.get("relationships", []),
+        "tables": {},
+    }
 
     for table_name in inspector.get_table_names():
         columns = [col["name"] for col in inspector.get_columns(table_name)]
         pk = inspector.get_pk_constraint(table_name).get("constrained_columns", [])
         schema["tables"][table_name] = {
+            "description": fallback.get("tables", {}).get(table_name, {}).get("description", ""),
             "columns": columns,
             "primary_key": pk,
         }
@@ -291,19 +300,22 @@ def read_schema_from_db(db_type: str) -> dict[str, Any]:
 
 
 def load_schema(db_type: str, schema_pack: str = "hr") -> dict[str, Any]:
-    """Load schema from live DB for HR or local metadata for selected schema pack."""
+    """Load schema from the selected internal DB, falling back to local metadata."""
     pack = normalize_schema_pack(schema_pack)
-    if pack == "hr" and is_db_connected(db_type):
+    if is_db_connected(db_type, pack):
         try:
-            return read_schema_from_db(db_type)
+            live_schema = read_schema_from_db(db_type, pack)
+            if live_schema.get("tables"):
+                return live_schema
         except Exception:
             pass
     return get_schema_pack(pack)
 
 
-def get_schema_details(schema_pack: str = "hr") -> dict[str, Any]:
+def get_schema_details(schema_pack: str = "hr", db_type: str = "mysql") -> dict[str, Any]:
     """Return schema details for GET /api/schema."""
-    schema = load_schema("mysql", schema_pack)
+    pack = normalize_schema_pack(schema_pack)
+    schema = load_schema(db_type, pack)
     tables_detail = []
     for name, info in schema["tables"].items():
         tables_detail.append({
@@ -314,9 +326,9 @@ def get_schema_details(schema_pack: str = "hr") -> dict[str, Any]:
         })
 
     return {
-        "schema_pack": schema.get("schema_pack", schema_pack),
-        "display_name": schema.get("display_name", schema_pack.title()),
-        "mode": "demo" if not is_db_connected("mysql") and not is_db_connected("postgresql") else "live",
+        "schema_pack": schema.get("schema_pack", pack),
+        "display_name": schema.get("display_name", pack.title()),
+        "mode": "live" if is_db_connected(db_type, pack) else "demo",
         "tables": tables_detail,
         "relationships": schema.get("relationships", HR_RELATIONSHIPS),
         "table_count": len(tables_detail),

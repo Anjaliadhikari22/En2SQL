@@ -42,6 +42,7 @@ const appState = {
   selectedQuery: "",
   queryType: "",
   databaseType: "mysql",
+  schemaPack: "hr",
 };
 
 let backendOnline = false;
@@ -211,6 +212,40 @@ function getQueryOptionLabel(sql, index) {
   return `Option ${index + 1}`;
 }
 
+function getStructuredOptions(data) {
+  return [data?.recommended_query, data?.alternative_query].filter((option) => option?.sql);
+}
+
+function renderBullets(items) {
+  const list = document.createElement("ul");
+  list.className = "option-bullets";
+  (Array.isArray(items) ? items : [items]).filter(Boolean).forEach((item) => {
+    const li = document.createElement("li");
+    li.textContent = item;
+    list.appendChild(li);
+  });
+  return list;
+}
+
+async function copySql(sql, button) {
+  if (!sql) return;
+  try {
+    await navigator.clipboard.writeText(sql);
+    const original = button?.textContent || "Copy SQL";
+    if (button) {
+      button.textContent = "Copied!";
+      button.classList.add("copied");
+      setTimeout(() => {
+        button.textContent = original;
+        button.classList.remove("copied");
+      }, 1800);
+    }
+    showToast("SQL copied to clipboard", "success", 2000);
+  } catch {
+    showToast("Could not copy to clipboard", "error");
+  }
+}
+
 function persistState() {
   sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
     appState,
@@ -232,6 +267,7 @@ function restoreState() {
     appState.selectedQuery = saved.appState?.selectedQuery || "";
     appState.queryType = saved.appState?.queryType || "";
     appState.databaseType = saved.appState?.databaseType || "mysql";
+    appState.schemaPack = saved.appState?.schemaPack || "hr";
     promptInput.value = saved.prompt || "";
     dbTypeSelect.value = appState.databaseType;
 
@@ -288,7 +324,7 @@ function applyRoleAccess() {
 
   setElementHidden(btnLoadSchema, !admin);
   setElementHidden(btnLoadHistory, !admin);
-  setElementHidden(executeSection, !admin || !appState.selectedQuery);
+  setElementHidden(executeSection, executeSection?.dataset.optionMode === "true" || !admin || !appState.selectedQuery);
   setElementHidden(executionBlock, !admin || executionBlock.hidden);
   setElementHidden(schemaDrawer, !admin || schemaDrawer.hidden);
   setElementHidden(historyDrawer, !admin || historyDrawer.hidden);
@@ -487,6 +523,86 @@ function renderQueryOptions(queries, selectedIndex) {
   });
 }
 
+function renderStructuredQueryOptions(data) {
+  queryOptionsContainer.innerHTML = "";
+  const options = getStructuredOptions(data);
+  if (!options.length) {
+    queryOptionsCard.hidden = true;
+    return;
+  }
+
+  queryOptionsCard.hidden = false;
+  options.forEach((option, index) => {
+    const article = document.createElement("article");
+    article.className = "query-option-card" + (index === 0 ? " selected" : "");
+
+    const header = document.createElement("div");
+    header.className = "query-option-card__header";
+
+    const heading = document.createElement("div");
+    const eyebrow = document.createElement("span");
+    eyebrow.className = "query-option-card__eyebrow";
+    eyebrow.textContent = option.label || `Option ${index + 1}`;
+    const title = document.createElement("h4");
+    title.textContent = option.title || (index === 0 ? "Recommended Query" : "Alternative Query");
+    heading.appendChild(eyebrow);
+    heading.appendChild(title);
+
+    const badge = document.createElement("span");
+    badge.className = "query-option-card__badge";
+    badge.textContent = index === 0 ? "Recommended" : "Alternative";
+    header.appendChild(heading);
+    header.appendChild(badge);
+
+    const pre = document.createElement("pre");
+    pre.className = "query-option-card__sql";
+    pre.textContent = option.sql;
+
+    const actions = document.createElement("div");
+    actions.className = "query-option-card__actions";
+    const canCopy = isAdmin() || (appState.queryType || "SELECT") === "SELECT";
+    if (canCopy) {
+      const copyButton = document.createElement("button");
+      copyButton.className = "btn btn-copy";
+      copyButton.type = "button";
+      copyButton.textContent = "Copy SQL";
+      copyButton.addEventListener("click", () => copySql(option.sql, copyButton));
+      actions.appendChild(copyButton);
+    }
+    if (isAdmin()) {
+      const executeButton = document.createElement("button");
+      executeButton.className = "btn btn-execute btn-execute--inline";
+      executeButton.type = "button";
+      executeButton.textContent = "Execute";
+      executeButton.addEventListener("click", () => handleExecute(option.sql));
+      actions.appendChild(executeButton);
+    }
+
+    const whyTitle = document.createElement("h5");
+    whyTitle.textContent = index === 0 ? "Why recommended" : "Why alternative";
+    const why = renderBullets(option.why_best || option.why_less_favourable || []);
+
+    const explanationTitle = document.createElement("h5");
+    explanationTitle.textContent = "Explanation";
+    const explanation = renderBullets(option.explanation || []);
+
+    const meta = document.createElement("div");
+    meta.className = "query-option-card__meta";
+    const validation = document.createElement("p");
+    validation.textContent = `Validation: ${option.validation?.message || "Not checked."}`;
+    const impact = document.createElement("p");
+    impact.textContent = `Impact: ${option.impact?.summary || "Impact depends on matching rows."}`;
+    const optimization = document.createElement("p");
+    optimization.textContent = `Optimization: ${(option.optimization || []).join(" ") || "No specific optimization suggestion."}`;
+    const warning = document.createElement("p");
+    warning.textContent = `Warning: ${option.warning || data.warning || "No warnings for this query."}`;
+    meta.append(validation, impact, optimization, warning);
+
+    article.append(header, pre, actions, whyTitle, why, explanationTitle, explanation, meta);
+    queryOptionsContainer.appendChild(article);
+  });
+}
+
 function updateSqlDisplay() {
   const sql = getSelectedQuery();
   outputSql.textContent = sql;
@@ -508,6 +624,7 @@ function showEmptyState() {
   btnCopySql.hidden = false;
   outputSql.textContent = "";
   queryOptionsContainer.innerHTML = "";
+  delete executeSection.dataset.optionMode;
   demoModeNote.hidden = true;
   applyRoleAccess();
 }
@@ -772,12 +889,23 @@ function displayResults(data) {
     return;
   }
 
-  const visibleQueries = userFacingQueries(data.generated_queries);
-  const selectedIndex = Math.max(0, visibleQueries.indexOf(sql));
-  renderQueryOptions(data.generated_queries, selectedIndex);
-  outputSql.textContent = sql;
-  btnExecute.disabled = false;
-  demoModeNote.hidden = !demoMode;
+  const structuredOptions = getStructuredOptions(data);
+  if (structuredOptions.length) {
+    renderStructuredQueryOptions(data);
+    sqlBlock.hidden = true;
+    btnCopySql.hidden = true;
+    executeSection.hidden = true;
+    executeSection.dataset.optionMode = "true";
+    appState.selectedQuery = structuredOptions[0].sql;
+  } else {
+    delete executeSection.dataset.optionMode;
+    const visibleQueries = userFacingQueries(data.generated_queries);
+    const selectedIndex = Math.max(0, visibleQueries.indexOf(sql));
+    renderQueryOptions(data.generated_queries, selectedIndex);
+    outputSql.textContent = sql;
+    btnExecute.disabled = false;
+    demoModeNote.hidden = !demoMode;
+  }
 
   queryTypeBadge.textContent = queryType;
   databaseBadge.textContent = (data.database_type || "mysql").toUpperCase();
@@ -947,8 +1075,9 @@ async function handleGenerate(event) {
 
     const queries = userFacingQueries(data.generated_queries);
     appState.currentResponse = data;
-    appState.selectedQuery = data.selected_query || queries[0] || "";
+    appState.selectedQuery = data.recommended_query?.sql || data.selected_query || queries[0] || "";
     appState.queryType = (data.query_type || "SELECT").toUpperCase();
+    appState.schemaPack = data.schema_pack || data.detected_domain || "hr";
 
     persistState();
     displayResults(data);
@@ -959,12 +1088,12 @@ async function handleGenerate(event) {
   }
 }
 
-async function handleExecute() {
+async function handleExecute(queryOverride = "") {
   if (!isAdmin()) {
     showToast("Execution is restricted to admin.", "error");
     return;
   }
-  const query = getSelectedQuery();
+  const query = queryOverride || getSelectedQuery();
   if (!query) { showToast("No query selected.", "error"); return; }
 
   const queryType = appState.queryType || "SELECT";
@@ -980,7 +1109,12 @@ async function handleExecute() {
 
   setGlobalLoading(true);
   try {
-    const data = await apiPost("/api/execute", { query, database_type: appState.databaseType, confirmed });
+    const data = await apiPost("/api/execute", {
+      query,
+      database_type: appState.databaseType,
+      schema_pack: appState.schemaPack,
+      confirmed,
+    });
     displayExecutionResult(data);
   } catch (err) {
     displayExecutionResult({ status: "error", columns: [], rows: [], message: err.message });
@@ -992,18 +1126,7 @@ async function handleExecute() {
 async function handleCopySql() {
   const sql = getSelectedQuery() || outputSql.textContent;
   if (!sql) return;
-  try {
-    await navigator.clipboard.writeText(sql);
-    btnCopySql.textContent = "Copied!";
-    btnCopySql.classList.add("copied");
-    showToast("SQL copied to clipboard", "success", 2000);
-    setTimeout(() => {
-      btnCopySql.textContent = "Copy SQL";
-      btnCopySql.classList.remove("copied");
-    }, 2000);
-  } catch {
-    showToast("Could not copy to clipboard", "error");
-  }
+  await copySql(sql, btnCopySql);
 }
 
 async function loadHistory() {
@@ -1026,7 +1149,11 @@ async function loadSchema() {
   if (!backendOnline) { showToast("Backend is not reachable.", "error"); return; }
   setGlobalLoading(true);
   try {
-    const data = await apiGet("/api/schema");
+    const params = new URLSearchParams({
+      database_type: appState.databaseType,
+      schema_pack: appState.schemaPack || "hr",
+    });
+    const data = await apiGet(`/api/schema?${params.toString()}`);
     renderSchema(data);
     openDrawer("schema");
   } catch (err) {
@@ -1044,6 +1171,7 @@ function clearAll(event) {
   appState.selectedQuery = "";
   appState.queryType = "";
   appState.databaseType = "mysql";
+  appState.schemaPack = "hr";
   sessionStorage.removeItem(STORAGE_KEY);
   promptInput.value = "";
   dbTypeSelect.value = appState.databaseType;
