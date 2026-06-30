@@ -227,6 +227,14 @@ function renderBullets(items) {
   return list;
 }
 
+function generationSourceLabel(source) {
+  const labels = {
+    llm: "Generated using GenAI assistance",
+    llm_fallback_rule_based: "Generated using safe fallback",
+  };
+  return labels[source] || "";
+}
+
 async function copySql(sql, button) {
   if (!sql) return;
   try {
@@ -532,6 +540,14 @@ function renderStructuredQueryOptions(data) {
   }
 
   queryOptionsCard.hidden = false;
+  const sourceLabel = generationSourceLabel(data?.generation_source);
+  if (sourceLabel) {
+    const sourceBadge = document.createElement("div");
+    sourceBadge.className = "generation-source-badge";
+    sourceBadge.textContent = sourceLabel;
+    queryOptionsContainer.appendChild(sourceBadge);
+  }
+
   options.forEach((option, index) => {
     const article = document.createElement("article");
     article.className = "query-option-card" + (index === 0 ? " selected" : "");

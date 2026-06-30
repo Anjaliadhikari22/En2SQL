@@ -1491,6 +1491,21 @@ a {
   gap: 0.65rem;
 }
 
+.generation-source-badge {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0.24rem 0.62rem;
+  border: 1px solid rgba(147, 197, 253, 0.18);
+  border-radius: 999px;
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.09);
+  font-size: 0.68rem;
+  font-weight: 850;
+  letter-spacing: 0.03em;
+}
+
 .query-option {
   display: grid;
   grid-template-columns: auto 1fr;
