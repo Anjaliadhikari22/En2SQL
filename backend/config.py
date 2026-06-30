@@ -50,9 +50,11 @@ class Config:
     # Optional local_llama mode should call only a local endpoint and should never
     # send database rows, tokens, passwords, environment variables, or execution
     # results to any model.
+    LLM_ENABLED = os.getenv("LLM_ENABLED", "false").lower() == "true"
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "rule_based")
     LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "http://localhost:11434")
     LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "llama3")
+    LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 
     # MySQL connection (SQLAlchemy URI format)
     MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
