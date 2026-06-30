@@ -14,8 +14,9 @@ URL: http://localhost:5000
 """
 
 import os
+import re
 import traceback
-from typing import Any
+from typing import Any, Optional
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -39,6 +40,7 @@ from config import Config
 from database import execute_query, get_database_key, is_db_connected, test_connection
 from history import add_entry, clear_history, get_history
 from impact_analyzer import analyze_impact
+from llm_service import generate_sql_with_llm, is_llm_enabled
 from prompt_processor import process_prompt
 from query_accuracy_guard import validate_query_accuracy
 from query_explainer import generate_explanation
@@ -244,6 +246,343 @@ def _build_query_option_payload(
     }
 
 
+def _safe_schema_summary(schema: dict[str, Any]) -> str:
+    """Build an internal-only schema summary for the local LLM."""
+    lines: list[str] = []
+    for table_name, info in sorted((schema.get("tables") or {}).items()):
+        columns = ", ".join(str(col) for col in info.get("columns", []))
+        lines.append(f"- {table_name}: {columns}")
+    relationships = schema.get("relationships") or []
+    if relationships:
+        lines.append("Relationships:")
+        for rel in relationships:
+            lines.append(f"- {rel.get('from', '')} -> {rel.get('to', '')}")
+    return "\n".join(lines)
+
+
+def _schema_maps(schema: dict[str, Any]) -> tuple[dict[str, set[str]], set[str]]:
+    tables: dict[str, set[str]] = {}
+    all_columns: set[str] = set()
+    for table_name, info in (schema.get("tables") or {}).items():
+        columns = {str(col).lower() for col in info.get("columns", [])}
+        tables[str(table_name).lower()] = columns
+        all_columns.update(columns)
+    return tables, all_columns
+
+
+def _strip_sql_literals(sql: str) -> str:
+    return re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", " ", sql or "")
+
+
+def _extract_cte_names(sql: str) -> set[str]:
+    return {
+        match.group(1).lower()
+        for match in re.finditer(r"\b(?:WITH|,)\s+(\w+)\s+AS\s*\(", sql, re.IGNORECASE)
+    }
+
+
+def _extract_table_refs(sql: str) -> tuple[list[str], dict[str, str]]:
+    cte_names = _extract_cte_names(sql)
+    tables: list[str] = []
+    aliases: dict[str, str] = {}
+    stop_words = {
+        "where", "on", "group", "order", "limit", "inner", "left", "right",
+        "full", "join", "cross", "union", "having", "set", "values",
+    }
+    pattern = re.compile(
+        r"\b(?:FROM|JOIN|INTO|UPDATE)\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(sql or ""):
+        table = match.group(1).lower()
+        alias = (match.group(2) or "").lower()
+        if table not in cte_names and table not in tables:
+            tables.append(table)
+        if alias and alias not in stop_words:
+            aliases[alias] = table
+        aliases[table] = table
+    return tables, aliases
+
+
+def _split_select_expressions(select_clause: str) -> list[str]:
+    expressions: list[str] = []
+    start = 0
+    depth = 0
+    for index, char in enumerate(select_clause):
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif char == "," and depth == 0:
+            expressions.append(select_clause[start:index])
+            start = index + 1
+    expressions.append(select_clause[start:])
+    return expressions
+
+
+def _schema_reference_error(sql: str, schema: dict[str, Any]) -> str:
+    """Return an error if SQL references tables/columns outside the schema."""
+    schema_tables, all_columns = _schema_maps(schema)
+    table_refs, aliases = _extract_table_refs(sql)
+    cte_names = _extract_cte_names(sql)
+
+    for table in table_refs:
+        if table not in schema_tables:
+            return f"Unknown table referenced by LLM SQL: {table}"
+
+    cleaned = _strip_sql_literals(sql)
+    known_aliases = set(aliases)
+    derived_aliases = {
+        match.group(1).lower()
+        for match in re.finditer(r"\bAS\s+(\w+)\b", cleaned, re.IGNORECASE)
+    }
+
+    for qualifier, column in re.findall(r"\b(\w+)\.(\w+)\b", cleaned):
+        qualifier = qualifier.lower()
+        column = column.lower()
+        if column == "*":
+            continue
+        if qualifier in cte_names:
+            continue
+        table = aliases.get(qualifier, qualifier)
+        if table not in schema_tables:
+            return f"Unknown table or alias referenced by LLM SQL: {qualifier}"
+        if column not in schema_tables[table]:
+            return f"Unknown column referenced by LLM SQL: {qualifier}.{column}"
+
+    sql_keywords = {
+        "select", "from", "where", "join", "inner", "left", "right", "full",
+        "outer", "on", "and", "or", "as", "order", "by", "group", "having",
+        "limit", "offset", "distinct", "case", "when", "then", "else", "end",
+        "with", "over", "partition", "desc", "asc", "null", "is", "not", "in",
+        "like", "ilike", "between", "exists", "count", "sum", "avg", "min",
+        "max", "row_number", "dense_rank", "rank", "extract", "date", "lower",
+        "upper", "concat", "current_date", "curdate", "rand", "random",
+    }
+    allowed = all_columns | known_aliases | derived_aliases | cte_names | set(schema_tables)
+
+    for match in re.finditer(r"\bSELECT\s+(.*?)\s+FROM\b", cleaned, re.IGNORECASE | re.DOTALL):
+        for expr in _split_select_expressions(match.group(1)):
+            expr = re.sub(r"\bAS\s+\w+\b", " ", expr, flags=re.IGNORECASE)
+            expr = re.sub(r"\b\w+\s*\(", " ", expr)
+            expr = re.sub(r"\b\w+\.\w+\b", " ", expr)
+            for token in re.findall(r"\b[A-Za-z_]\w*\b", expr):
+                lower = token.lower()
+                if lower not in sql_keywords and lower not in allowed:
+                    return f"Unknown column referenced by LLM SQL: {token}"
+
+    for token in re.findall(r"\b([A-Za-z_]\w*)\s*(?:=|<>|!=|>=|<=|>|<|\bLIKE\b|\bILIKE\b|\bIN\b)", cleaned, re.IGNORECASE):
+        lower = token.lower()
+        if lower not in sql_keywords and lower not in allowed:
+            return f"Unknown column referenced by LLM SQL: {token}"
+
+    return ""
+
+
+def _dialect_error(sql: str, database_type: str) -> str:
+    upper = (sql or "").upper()
+    if database_type == "mysql":
+        if " ILIKE " in upper or "::" in sql or "RANDOM()" in upper:
+            return "LLM SQL used PostgreSQL-only syntax for a MySQL request."
+    if database_type == "postgresql":
+        if "CURDATE()" in upper or "RAND()" in upper or "`" in sql:
+            return "LLM SQL used MySQL-only syntax for a PostgreSQL request."
+    return ""
+
+
+def _has_multiple_statements(sql: str) -> bool:
+    return len([part for part in (sql or "").split(";") if part.strip()]) > 1
+
+
+def _validate_llm_sql(
+    sql: str,
+    *,
+    intent: dict[str, Any],
+    schema: dict[str, Any],
+    database_type: str,
+    role: str,
+) -> Optional[dict[str, Any]]:
+    """Validate LLM SQL through En2SQL's existing operation and safety policy."""
+    sql = (sql or "").strip()
+    if not sql or _has_multiple_statements(sql):
+        return None
+
+    operation = classify_sql_operation(sql)
+    expected = (intent.get("action") or "SELECT").upper()
+    if expected in {"SELECT", "INSERT", "UPDATE", "DELETE"} and operation != expected:
+        return None
+
+    if operation in ("UPDATE", "DELETE") and "WHERE" not in sql.upper():
+        return None
+
+    permission = check_operation_permission(operation, role, confirmed=False, for_execution=False)
+    if not permission["allowed"]:
+        return None
+
+    if _dialect_error(sql, database_type):
+        return None
+
+    if _schema_reference_error(sql, schema):
+        return None
+
+    validation = validate_query(sql, schema)
+    if not validation["validation"]["valid"]:
+        return None
+
+    unsafe_schema = operation in {"CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE", "CREATE_USER"}
+    if unsafe_schema or any(keyword in sql.upper() for keyword in ("DROP ", "ALTER ", "TRUNCATE", "GRANT ", "REVOKE ", "CREATE USER")):
+        return None
+
+    return {
+        "sql": sql,
+        "operation": operation,
+        "validation": validation,
+    }
+
+
+def _build_llm_query_option_payload(
+    *,
+    label: str,
+    title: str,
+    option: dict[str, Any],
+    validation: dict[str, Any],
+    intent: dict[str, Any],
+    schema: dict[str, Any],
+    database_type: str,
+    schema_pack: str,
+    recommended: bool,
+    no_alternative: bool = False,
+) -> dict[str, Any]:
+    sql = option["sql"]
+    explanation = _as_list(option.get("explanation"))
+    if no_alternative and "No strong alternative query is needed for this request." not in explanation:
+        explanation.append("No strong alternative query is needed for this request.")
+    impact = analyze_impact(sql, intent, schema, database_type, schema_pack=schema_pack)
+    return {
+        "label": label,
+        "title": title,
+        "sql": sql,
+        "why_best" if recommended else "why_less_favourable": _as_list(
+            option.get("why_best") if recommended else option.get("why_less_favourable")
+        ),
+        "explanation": explanation,
+        "validation": {
+            "is_valid": bool(validation["validation"]["valid"]),
+            "message": validation["validation_message"],
+        },
+        "impact": {
+            "summary": impact["expected_output"],
+            "affected_tables": impact["affected_tables"],
+            "affected_columns": impact["affected_columns"],
+        },
+        "optimization": validation["optimizations"],
+        "warning": validation["warning_message"],
+    }
+
+
+def _try_llm_generation(
+    *,
+    prompt: str,
+    database_type: str,
+    role: str,
+    schema_pack: str,
+    schema: dict[str, Any],
+    intent: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Return a fully-shaped LLM generation payload, or None for rule fallback."""
+    if not is_llm_enabled():
+        return None
+
+    try:
+        llm_result = generate_sql_with_llm(
+            prompt,
+            database_type,
+            _safe_schema_summary(schema),
+            role,
+        )
+    except Exception as exc:
+        print(f"[En2SQL LLM] LLM generation failed safely: {exc}")
+        return None
+
+    if not llm_result or llm_result.get("unsupported"):
+        return None
+
+    recommended_raw = llm_result.get("recommended_query") or {}
+    alternative_raw = llm_result.get("alternative_query") or {}
+    recommended = _validate_llm_sql(
+        recommended_raw.get("sql", ""),
+        intent=intent,
+        schema=schema,
+        database_type=database_type,
+        role=role,
+    )
+    if not recommended:
+        return None
+
+    alternative = None
+    if alternative_raw:
+        alternative = _validate_llm_sql(
+            alternative_raw.get("sql", ""),
+            intent=intent,
+            schema=schema,
+            database_type=database_type,
+            role=role,
+        )
+
+    generated_queries = [recommended["sql"]]
+    if alternative:
+        generated_queries.append(alternative["sql"])
+
+    selected_query = recommended["sql"]
+    selected_validation = recommended["validation"]
+    operation = recommended["operation"]
+    if operation in ("INSERT", "UPDATE", "DELETE"):
+        selected_validation["warning_message"] = (
+            selected_validation["warning_message"] + " | " if selected_validation["warning_message"] else ""
+        ) + "This query may modify database records and requires confirmation before execution."
+
+    explanation = _as_list(recommended_raw.get("explanation"))
+    no_alternative = alternative is None
+    if no_alternative and "No strong alternative query is needed for this request." not in explanation:
+        explanation.append("No strong alternative query is needed for this request.")
+
+    impact = analyze_impact(selected_query, intent, schema, database_type, schema_pack=schema_pack)
+    recommended_query = _build_llm_query_option_payload(
+        label="Option 1",
+        title="Recommended Query",
+        option={**recommended_raw, "sql": recommended["sql"]},
+        validation=selected_validation,
+        intent=intent,
+        schema=schema,
+        database_type=database_type,
+        schema_pack=schema_pack,
+        recommended=True,
+        no_alternative=no_alternative,
+    )
+    alternative_query = _build_llm_query_option_payload(
+        label="Option 2",
+        title="Alternative Query",
+        option={**alternative_raw, "sql": alternative["sql"]},
+        validation=alternative["validation"],
+        intent=intent,
+        schema=schema,
+        database_type=database_type,
+        schema_pack=schema_pack,
+        recommended=False,
+    ) if alternative else None
+
+    return {
+        "generated_queries": generated_queries,
+        "selected_query": selected_query,
+        "operation": operation,
+        "validation_result": selected_validation,
+        "explanation": explanation,
+        "impact": impact,
+        "recommended_query": recommended_query,
+        "alternative_query": alternative_query,
+    }
+
+
 def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_pack: str = "auto") -> dict:
     """
     Execute the full NL → SQL pipeline and return the API response dict.
@@ -252,6 +591,7 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_p
       prompt → generate → validate → explain → impact → history
     """
     def scoped(response: dict) -> dict:
+        response.setdefault("generation_source", "rule_based")
         return _sanitize_response_for_role(response, role)
 
     schema_decision = detect_schema_pack(prompt, schema_pack)
@@ -440,24 +780,48 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_p
             "warning": "Unsupported schema.",
         })
 
-    # Step 2: SQL generation (user-facing queries only)
-    generated_queries = generate_all_queries(intent, schema, database_type)
+    llm_enabled = is_llm_enabled()
+    generation_source = "llm_fallback_rule_based" if llm_enabled else "rule_based"
+    llm_generation = _try_llm_generation(
+        prompt=prompt,
+        database_type=database_type,
+        role=role,
+        schema_pack=resolved_schema_pack,
+        schema=schema,
+        intent=intent,
+    ) if llm_enabled else None
 
-    # Step 2b: Logic-level guard — catches syntactically valid but incomplete
-    # SQL for common HR/interview prompts before validation and explanation.
-    accuracy_result = validate_query_accuracy(
-        prompt,
-        generated_queries,
-        intent.get("action", "SELECT"),
-        database_type,
-    )
-    generated_queries = accuracy_result["generated_queries"]
-    generated_queries = ensure_two_query_options(intent, schema, database_type, generated_queries)
-    selected_query = generated_queries[0] if generated_queries else accuracy_result["selected_query"]
+    if llm_generation:
+        generation_source = "llm"
+        generated_queries = llm_generation["generated_queries"]
+        selected_query = llm_generation["selected_query"]
+        validation_result = llm_generation["validation_result"]
+        operation = llm_generation["operation"]
+        explanation = llm_generation["explanation"]
+        impact = llm_generation["impact"]
+        recommended_query = llm_generation["recommended_query"]
+        alternative_query = llm_generation["alternative_query"]
+        accuracy_result = {}
+    else:
+        # Step 2: SQL generation (user-facing queries only)
+        generated_queries = generate_all_queries(intent, schema, database_type)
 
-    # Step 3: Validation (sqlparse — preserves clean academic SQL format)
-    validation_result = validate_query(selected_query, schema)
-    operation = classify_sql_operation(selected_query)
+        # Step 2b: Logic-level guard — catches syntactically valid but incomplete
+        # SQL for common HR/interview prompts before validation and explanation.
+        accuracy_result = validate_query_accuracy(
+            prompt,
+            generated_queries,
+            intent.get("action", "SELECT"),
+            database_type,
+        )
+        generated_queries = accuracy_result["generated_queries"]
+        generated_queries = ensure_two_query_options(intent, schema, database_type, generated_queries)
+        selected_query = generated_queries[0] if generated_queries else accuracy_result["selected_query"]
+
+        # Step 3: Validation (sqlparse — preserves clean academic SQL format)
+        validation_result = validate_query(selected_query, schema)
+        operation = classify_sql_operation(selected_query)
+
     if operation in ("UPDATE", "DELETE") and "WHERE" not in selected_query.upper():
         return scoped({
             "user_prompt": prompt,
@@ -478,6 +842,7 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_p
             "validation": "Specific WHERE condition required",
             "optimization_suggestion": "Please provide a specific condition such as employee_id to avoid modifying multiple records.",
             "warning": "Please provide a specific condition such as employee_id to avoid modifying multiple records.",
+            "generation_source": generation_source,
         })
 
     permission = check_operation_permission(operation, role, confirmed=False, for_execution=False)
@@ -523,64 +888,70 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_p
             "validation": "Operation blocked",
             "optimization_suggestion": "Use a supported SELECT request or an approved admin workflow.",
             "warning": permission.get("reason", "Operation blocked."),
+            "generation_source": generation_source,
         })
 
-    if accuracy_result.get("guard_applied"):
-        validation_result["validation_message"] += (
-            f" Query accuracy guard applied: {accuracy_result.get('guard_reason')}"
+    if not llm_generation:
+        if accuracy_result.get("guard_applied"):
+            validation_result["validation_message"] += (
+                f" Query accuracy guard applied: {accuracy_result.get('guard_reason')}"
+            )
+        if operation in ("INSERT", "UPDATE", "DELETE"):
+            validation_result["warning_message"] = (
+                validation_result["warning_message"] + " | " if validation_result["warning_message"] else ""
+            ) + "This query may modify database records and requires confirmation before execution."
+
+        # Step 4: Explanation
+        explanation = (
+            accuracy_result.get("explanation")
+            or generate_explanation(intent, selected_query, database_type)
         )
-    if operation in ("INSERT", "UPDATE", "DELETE"):
-        validation_result["warning_message"] = (
-            validation_result["warning_message"] + " | " if validation_result["warning_message"] else ""
-        ) + "This query may modify database records and requires confirmation before execution."
 
-    # Step 4: Explanation
-    explanation = (
-        accuracy_result.get("explanation")
-        or generate_explanation(intent, selected_query, database_type)
-    )
-
-    # Step 5: Impact analysis (COUNT(*) used internally, not in generated_queries)
-    impact = analyze_impact(selected_query, intent, schema, database_type, schema_pack=resolved_schema_pack)
-    recommended_query = _build_query_option_payload(
-        label="Option 1",
-        title="Recommended Query",
-        sql=generated_queries[0],
-        intent=intent,
-        schema=schema,
-        database_type=database_type,
-        schema_pack=resolved_schema_pack,
-        recommended=True,
-        fallback_explanation=explanation,
-    ) if generated_queries else None
-    alternative_query = _build_query_option_payload(
-        label="Option 2",
-        title="Alternative Query",
-        sql=generated_queries[1],
-        intent=intent,
-        schema=schema,
-        database_type=database_type,
-        schema_pack=resolved_schema_pack,
-        recommended=False,
-    ) if len(generated_queries) > 1 else None
+        # Step 5: Impact analysis (COUNT(*) used internally, not in generated_queries)
+        impact = analyze_impact(selected_query, intent, schema, database_type, schema_pack=resolved_schema_pack)
+        recommended_query = _build_query_option_payload(
+            label="Option 1",
+            title="Recommended Query",
+            sql=generated_queries[0],
+            intent=intent,
+            schema=schema,
+            database_type=database_type,
+            schema_pack=resolved_schema_pack,
+            recommended=True,
+            fallback_explanation=explanation,
+        ) if generated_queries else None
+        alternative_query = _build_query_option_payload(
+            label="Option 2",
+            title="Alternative Query",
+            sql=generated_queries[1],
+            intent=intent,
+            schema=schema,
+            database_type=database_type,
+            schema_pack=resolved_schema_pack,
+            recommended=False,
+        ) if len(generated_queries) > 1 else None
 
     # Step 6: Save admin generations to history. User generations are kept
     # generation-only and are not written to the admin history file.
     if role == "admin":
-        add_entry(
-            user_prompt=prompt,
-            generated_sql=selected_query,
-            database_type=database_type,
-            query_type=intent.get("action", "SELECT"),
-            explanation=explanation,
-            expected_output=impact["expected_output"],
-            affected_tables=impact["affected_tables"],
-            metadata={
-                "affected_columns": impact["affected_columns"],
-                "validation": validation_result["validation_message"],
-                "warning": validation_result["warning_message"],
-            },
-        )
+        try:
+            add_entry(
+                user_prompt=prompt,
+                generated_sql=selected_query,
+                database_type=database_type,
+                query_type=intent.get("action", "SELECT"),
+                explanation=explanation,
+                expected_output=impact["expected_output"],
+                affected_tables=impact["affected_tables"],
+                metadata={
+                    "affected_columns": impact["affected_columns"],
+                    "validation": validation_result["validation_message"],
+                    "warning": validation_result["warning_message"],
+                    "generation_source": generation_source,
+                },
+            )
+        except Exception as exc:
+            print(f"[En2SQL history] Failed to save query history: {exc}")
 
     response = {
         "user_prompt": prompt,
@@ -601,6 +972,7 @@ def _run_pipeline(prompt: str, database_type: str, role: str = "admin", schema_p
         "validation": validation_result["validation_message"],
         "optimization_suggestion": validation_result["optimization_message"],
         "warning": validation_result["warning_message"],
+        "generation_source": generation_source,
     }
     return _sanitize_response_for_role(response, role)
 
