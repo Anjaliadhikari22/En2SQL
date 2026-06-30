@@ -76,6 +76,24 @@ def test_employees_earning_more_than_average_salary():
     assert "FROM EMPLOYEES" in upper
 
 
+def test_employees_earning_more_than_own_department_average_salary():
+    prompt = (
+        "List employees who earn more than the average salary of their own department, "
+        "along with their department name and salary."
+    )
+    _, queries, sql = guarded_pipeline(prompt)
+    upper = compact(sql)
+
+    assert len(queries) >= 2
+    assert "DEPARTMENT_NAME" in upper
+    assert "SALARY" in upper
+    assert (
+        "E2.DEPARTMENT_ID = E.DEPARTMENT_ID" in upper
+        or ("WITH DEPARTMENT_AVG AS" in upper and "JOIN DEPARTMENT_AVG" in upper)
+    )
+    assert upper != "SELECT * FROM EMPLOYEES WHERE SALARY > ( SELECT AVG(SALARY) FROM EMPLOYEES );"
+
+
 def test_employees_earning_less_than_average_salary():
     _, _, sql = guarded_pipeline("Find employees earning less than the average salary")
     upper = compact(sql)

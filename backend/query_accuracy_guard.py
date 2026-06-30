@@ -248,6 +248,45 @@ def _avg_salary_query(operator: str) -> str:
     )
 
 
+def _department_avg_salary_queries(operator: str = ">") -> list[str]:
+    correlated = (
+        "SELECT\n"
+        "    e.first_name,\n"
+        "    e.last_name,\n"
+        "    e.salary,\n"
+        "    d.department_name\n"
+        "FROM employees e\n"
+        "JOIN departments d\n"
+        "    ON e.department_id = d.department_id\n"
+        f"WHERE e.salary {operator} (\n"
+        "    SELECT AVG(e2.salary)\n"
+        "    FROM employees e2\n"
+        "    WHERE e2.department_id = e.department_id\n"
+        ");"
+    )
+    cte = (
+        "WITH department_avg AS (\n"
+        "    SELECT\n"
+        "        department_id,\n"
+        "        AVG(salary) AS avg_salary\n"
+        "    FROM employees\n"
+        "    GROUP BY department_id\n"
+        ")\n"
+        "SELECT\n"
+        "    e.first_name,\n"
+        "    e.last_name,\n"
+        "    e.salary,\n"
+        "    d.department_name\n"
+        "FROM employees e\n"
+        "JOIN departments d\n"
+        "    ON e.department_id = d.department_id\n"
+        "JOIN department_avg da\n"
+        "    ON e.department_id = da.department_id\n"
+        f"WHERE e.salary {operator} da.avg_salary;"
+    )
+    return [correlated, cte]
+
+
 def _count_by_department_queries() -> list[str]:
     return [
         (
@@ -392,6 +431,38 @@ def _ecommerce_customers_no_orders_query() -> str:
     )
 
 
+def _is_department_average_prompt(normalized: str) -> bool:
+    if "employee" not in normalized or "salary" not in normalized:
+        return False
+    patterns = (
+        r"\bown department average\b",
+        r"\bdepartment average salary\b",
+        r"\baverage salary of (?:their|own|the) department\b",
+        r"\babove (?:their|own|the) department average\b",
+        r"\bearn(?:ing)? more than (?:the )?department average\b",
+        r"\bmore than (?:the )?average salary of (?:their|own|the) department\b",
+        r"\bgreater than (?:the )?average salary of (?:their|own|the) department\b",
+        r"\baverage salary of their own department\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
+def _valid_department_avg_salary(sql: str) -> bool:
+    upper = _compact(sql)
+    has_correlated_department_avg = (
+        "AVG(E2.SALARY)" in upper
+        and "E2.DEPARTMENT_ID = E.DEPARTMENT_ID" in upper
+    )
+    has_cte_department_avg = (
+        "WITH DEPARTMENT_AVG AS" in upper
+        and "AVG(SALARY) AS AVG_SALARY" in upper
+        and "GROUP BY DEPARTMENT_ID" in upper
+        and "JOIN DEPARTMENT_AVG" in upper
+        and "E.SALARY > DA.AVG_SALARY" in upper
+    )
+    return has_correlated_department_avg or has_cte_department_avg
+
+
 def _result(
     generated_queries: list[str],
     *,
@@ -464,6 +535,20 @@ def validate_query_accuracy(
                 "This is a read-only query, so it does not change any data.",
             ],
             reason="Ensured no-order customer detection uses LEFT JOIN and IS NULL.",
+            applied=not is_valid,
+            query_type="SELECT",
+        )
+
+    if _is_department_average_prompt(normalized):
+        is_valid = current_queries and all(_valid_department_avg_salary(sql) for sql in current_queries)
+        return _result(
+            current_queries if is_valid else _department_avg_salary_queries(">"),
+            explanation=[
+                "Shows employees whose salary is above the average salary of their own department.",
+                "Compares each employee with coworkers in the same department.",
+                "Avoids using the overall company average.",
+            ],
+            reason="Replaced overall average salary SQL with department-wise average salary comparison.",
             applied=not is_valid,
             query_type="SELECT",
         )

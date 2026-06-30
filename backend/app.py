@@ -164,6 +164,12 @@ def _query_option_reason(sql: str, intent: dict[str, Any], *, recommended: bool)
                 "It is simple, readable, and efficient.",
             ]
         if "JOIN DEPARTMENTS" in upper and "employee" in normalized and "department" in normalized:
+            if "AVG(E2.SALARY)" in upper and "E2.DEPARTMENT_ID = E.DEPARTMENT_ID" in upper:
+                return [
+                    "It directly compares each employee against their own department average.",
+                    "It is simple and clear.",
+                    "It avoids returning employees based on the overall company average.",
+                ]
             return [
                 "This query directly joins employees with departments.",
                 "It uses the correct foreign key relationship.",
@@ -180,6 +186,12 @@ def _query_option_reason(sql: str, intent: dict[str, Any], *, recommended: bool)
             "DENSE_RANK handles ties but may return more rows than requested.",
             "It is useful when tied values should be included.",
             "It is less suitable if the user expects an exact row count per group.",
+        ]
+    if "WITH DEPARTMENT_AVG AS" in upper or "JOIN DEPARTMENT_AVG" in upper:
+        return [
+            "This query is also correct.",
+            "It precomputes department averages using a CTE.",
+            "It may be more readable for complex queries but is slightly longer.",
         ]
     if "CONCAT(" in upper or " || " in sql:
         return [

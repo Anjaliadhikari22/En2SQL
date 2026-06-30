@@ -40,6 +40,32 @@ def test_guard_replaces_global_limit_for_department_top_n():
     assert "PARTITION BY" in compact(result["selected_query"])
 
 
+def test_guard_replaces_overall_average_for_department_average_prompt():
+    bad_sql = (
+        "SELECT *\n"
+        "FROM employees\n"
+        "WHERE salary > (\n"
+        "    SELECT AVG(salary)\n"
+        "    FROM employees\n"
+        ");"
+    )
+
+    result = validate_query_accuracy(
+        "List employees who earn more than the average salary of their own department, along with their department name and salary.",
+        [bad_sql],
+        "SELECT",
+        "mysql",
+    )
+
+    selected = compact(result["selected_query"])
+    assert result["guard_applied"] is True
+    assert selected != compact(bad_sql)
+    assert (
+        "E2.DEPARTMENT_ID = E.DEPARTMENT_ID" in selected
+        or ("WITH DEPARTMENT_AVG AS" in selected and "JOIN DEPARTMENT_AVG" in selected)
+    )
+
+
 def test_guard_preserves_database_dialect_for_random_rows():
     mysql = validate_query_accuracy("Show 3 random employees", [], "SELECT", "mysql")
     postgres = validate_query_accuracy("Show 3 random employees", [], "SELECT", "postgresql")
